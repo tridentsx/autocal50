@@ -1,0 +1,15 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "autocal50",
+  "outputfilename": "autocal50",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "wailsjsdir": "./frontend/src",
+  "tags": "webkit2_41",
+  "author": {
+    "name": "Carl-Fredrik Sundstrom",
+    "email": "carl-fredrik.sundstrom@ericsson.com"
+  }
+}
