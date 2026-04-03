@@ -66,10 +66,14 @@ jobs:
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
       - name: Build
-        run: wails build -platform darwin/universal
+        run: wails build -platform darwin/arm64
+      - name: List output
+        run: ls -la build/bin/
       - name: Package
-        run: cd build/bin && ditto -c -k --keepParent autocal50.app autocal50-darwin-universal.zip
+        run: |
+          cd build/bin
+          zip -r autocal50-darwin-arm64.zip autocal50.app
       - name: Upload
         uses: softprops/action-gh-release@v2
         with:
-          files: build/bin/autocal50-darwin-universal.zip
+          files: build/bin/autocal50-darwin-arm64.zip
