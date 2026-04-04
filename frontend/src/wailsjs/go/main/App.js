@@ -34,8 +34,20 @@ export function DisconnectTransport() {
   return window['go']['main']['App']['DisconnectTransport']();
 }
 
+export function EvaluateMeasurement(arg1, arg2) {
+  return window['go']['main']['App']['EvaluateMeasurement'](arg1, arg2);
+}
+
 export function GetActivePattern() {
   return window['go']['main']['App']['GetActivePattern']();
+}
+
+export function GetCalibrationStandards() {
+  return window['go']['main']['App']['GetCalibrationStandards']();
+}
+
+export function GetCalibrationSteps(arg1) {
+  return window['go']['main']['App']['GetCalibrationSteps'](arg1);
 }
 
 export function GetDisplayEDID(arg1) {

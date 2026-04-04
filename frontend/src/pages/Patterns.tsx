@@ -1,6 +1,60 @@
 import { useEffect, useRef, useState } from "react";
+import { useParams } from "react-router-dom";
+import { motion } from "framer-motion";
 import { api } from "@/api";
 import type { Pattern, DisplayOutput, RGB } from "@/types";
+
+// Map sidebar category slugs to pattern group name prefixes
+const categoryGroups: Record<string, string[]> = {
+  grayscale: ["Grayscale", "Grayscale Windows"],
+  clipping: ["Clipping"],
+  colors: ["Primaries", "Secondaries", "Color Windows"],
+  saturation: ["Saturation"],
+  peak: ["Peak vs Size"],
+  hdr: ["HDR EOTF Steps"],
+  contrast: ["Contrast Ratio", "Windows"],
+  gradients: ["Gradients"],
+  geometry: ["Geometry"],
+  colorchecker: ["ColorChecker"],
+};
+
+// Purpose descriptions for pattern groups (shown in group headers)
+const groupPurpose: Record<string, string> = {
+  "Grayscale": "Full-field IRE steps for white balance and gamma measurement",
+  "Grayscale Windows": "18% windows on black for accurate meter readings without ABL influence",
+  "Clipping – Black": "Near-black steps (0–5%) to check shadow detail visibility",
+  "Clipping – White": "Near-white steps (95–100%) to check highlight clipping",
+  "Primaries": "Full-field R/G/B for gamut boundary measurement",
+  "Secondaries": "Full-field C/M/Y for secondary color accuracy",
+  "Color Windows": "18% color windows for accurate primary/secondary metering",
+  "Saturation 20%": "20% saturation sweep across all colors for color tracking",
+  "Saturation 40%": "40% saturation sweep across all colors for color tracking",
+  "Saturation 60%": "60% saturation sweep across all colors for color tracking",
+  "Saturation 80%": "80% saturation sweep across all colors for color tracking",
+  "Saturation 100%": "100% saturation sweep across all colors for color tracking",
+  "Peak vs Size": "White windows at different sizes to detect auto brightness limiting (ABL)",
+  "HDR EOTF Steps": "PQ ST.2084 code values at specific nit levels for HDR EOTF verification",
+  "Contrast Ratio": "Black/white fields and checkerboards for sequential and ANSI contrast",
+  "Windows": "Standard measurement windows at common sizes (10%, 18%, 50%)",
+  "Gradients": "Smooth ramps to check banding, quantization, and monotonicity",
+  "Geometry": "Crosshatch grid for convergence, alignment, and keystone verification",
+  "ColorChecker": "Classic 24-patch reference for overall color accuracy (ΔE verification)",
+};
+
+// Purpose for individual pattern types
+function patternPurpose(p: Pattern): string {
+  if (p.group.startsWith("Saturation")) return `${p.name} — measures color tracking accuracy at partial saturation`;
+  switch (p.type) {
+    case "solid": return `${p.name} — full-field stimulus for direct measurement`;
+    case "window": return `${p.name} — ${p.windowPc}% window on black, avoids ABL for accurate metering`;
+    case "gradient": return `${p.name} — smooth ramp to check banding and tonal transitions`;
+    case "grid": return `${p.name} — line grid for geometric alignment verification`;
+    case "checker": return p.group === "ColorChecker"
+      ? `${p.name} — 24-patch reference target for ΔE verification`
+      : `${p.name} — alternating pattern for contrast measurement`;
+    default: return p.name;
+  }
+}
 
 function rgb(c: RGB) { return `rgb(${c.r},${c.g},${c.b})`; }
 
@@ -56,7 +110,7 @@ function Thumbnail({ pattern: p, active, onClick }: { pattern: Pattern; active: 
   }, [p]);
 
   return (
-    <button onClick={onClick} className="flex flex-col items-center gap-1 p-2 rounded"
+    <button onClick={onClick} title={patternPurpose(p)} className="flex flex-col items-center gap-1 p-2 rounded"
       style={{ background: active ? "var(--accent)" : "var(--surface)", border: "1px solid var(--border)" }}>
       <canvas ref={ref} width={80} height={45} className="rounded" />
       <span className="text-xs truncate w-20 text-center" style={{ color: active ? "#fff" : "var(--muted)" }}>{p.name}</span>
@@ -65,6 +119,7 @@ function Thumbnail({ pattern: p, active, onClick }: { pattern: Pattern; active: 
 }
 
 export default function Patterns() {
+  const { category } = useParams<{ category?: string }>();
   const [battery, setBattery] = useState<Pattern[]>([]);
   const [displays, setDisplays] = useState<DisplayOutput[]>([]);
   const [selectedDisplay, setSelectedDisplay] = useState("");
@@ -72,15 +127,17 @@ export default function Patterns() {
   const [patternWindow, setPatternWindow] = useState<Window | null>(null);
   const [edid, setEdid] = useState<any>(null);
 
+  const [error, setError] = useState("");
+
   useEffect(() => {
-    api.getPatternBattery().then(setBattery).catch(() => {});
+    api.getPatternBattery().then(setBattery).catch((e) => setError(String(e)));
     api.listDisplays().then((d) => {
       setDisplays(d);
       api.getPatternDisplay().then((name) => {
         if (name) { setSelectedDisplay(name); api.getDisplayEDID(name).then(setEdid).catch(() => setEdid(null)); }
         else if (d.length) { setSelectedDisplay(d[0].name); api.setPatternDisplay(d[0].name); api.getDisplayEDID(d[0].name).then(setEdid).catch(() => setEdid(null)); }
       });
-    }).catch(() => {});
+    }).catch((e) => setError(String(e)));
   }, []);
 
   const selectPattern = (p: Pattern) => {
@@ -93,7 +150,6 @@ export default function Patterns() {
     if (w) {
       setPatternWindow(w);
       w.focus();
-      setTimeout(() => w.document.documentElement.requestFullscreen?.(), 300);
     }
   };
 
@@ -103,11 +159,15 @@ export default function Patterns() {
     api.getDisplayEDID(name).then(setEdid).catch(() => setEdid(null));
   };
 
-  const groups = [...new Set(battery.map((p) => p.group))];
+  const filtered = category && categoryGroups[category]
+    ? battery.filter((p) => categoryGroups[category].some((g) => p.group.startsWith(g)))
+    : battery;
+  const groups = [...new Set(filtered.map((p) => p.group))];
 
   return (
     <div>
       <h2 className="text-2xl font-bold mb-4">Test Patterns</h2>
+      {error && <div className="mb-4 text-sm" style={{ color: "#ef4444" }}>{error}</div>}
 
       {/* Controls bar */}
       <div className="flex gap-4 mb-6 items-end">
@@ -151,10 +211,15 @@ export default function Patterns() {
       {/* Pattern groups */}
       {groups.map((group) => (
         <div key={group} className="mb-6">
-          <h3 className="text-sm font-semibold mb-2" style={{ color: "var(--muted)" }}>{group}</h3>
+          <h3 className="text-sm font-semibold mb-2" title={groupPurpose[group] ?? ""} style={{ color: "var(--muted)" }}>{group}</h3>
           <div className="flex flex-wrap gap-2">
-            {battery.filter((p) => p.group === group).map((p) => (
-              <Thumbnail key={p.id} pattern={p} active={p.id === activeId} onClick={() => selectPattern(p)} />
+            {filtered.filter((p) => p.group === group).map((p, i) => (
+              <motion.div key={p.id}
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: i * 0.02, type: "spring", stiffness: 300, damping: 20 }}>
+                <Thumbnail pattern={p} active={p.id === activeId} onClick={() => selectPattern(p)} />
+              </motion.div>
             ))}
           </div>
         </div>

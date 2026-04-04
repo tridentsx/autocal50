@@ -1,17 +1,28 @@
+import { motion } from "framer-motion";
 import { useLiveReading } from "@/hooks/useWailsEvent";
+import { useAnimatedValue } from "@/components/cal/useAnimatedValue";
 import ReactECharts from "echarts-for-react";
+
+function AnimatedStat({ label, value, unit }: { label: string; value: number; unit?: string }) {
+  const animated = useAnimatedValue(value);
+  const decimals = label === "CCT" ? 0 : label === "Luminance" ? 1 : 4;
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 15 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="rounded-lg p-4 text-center"
+      style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
+    >
+      <div className="text-sm mb-1" style={{ color: "var(--muted)" }}>{label}</div>
+      <div className="text-xl font-mono">{animated.toFixed(decimals)}{unit ? ` ${unit}` : ""}</div>
+    </motion.div>
+  );
+}
 
 export default function LiveView() {
   const reading = useLiveReading();
 
   if (!reading) return <div style={{ color: "var(--muted)" }}>Waiting for measurements…</div>;
-
-  const stats = [
-    { label: "x", value: reading.x.toFixed(4) },
-    { label: "y", value: reading.y.toFixed(4) },
-    { label: "Luminance", value: `${reading.luminance.toFixed(1)} cd/m²` },
-    { label: "CCT", value: `${reading.cct.toFixed(0)} K` },
-  ];
 
   const gaugeOption = {
     backgroundColor: "transparent",
@@ -35,16 +46,20 @@ export default function LiveView() {
     <div>
       <h2 className="text-2xl font-bold mb-4">Live View</h2>
       <div className="grid grid-cols-4 gap-4 mb-6">
-        {stats.map((s) => (
-          <div key={s.label} className="rounded-lg p-4 text-center" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-            <div className="text-sm mb-1" style={{ color: "var(--muted)" }}>{s.label}</div>
-            <div className="text-xl font-mono">{s.value}</div>
-          </div>
-        ))}
+        <AnimatedStat label="x" value={reading.x} />
+        <AnimatedStat label="y" value={reading.y} />
+        <AnimatedStat label="Luminance" value={reading.luminance} unit="cd/m²" />
+        <AnimatedStat label="CCT" value={reading.cct} unit="K" />
       </div>
-      <div className="rounded-lg p-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ delay: 0.2 }}
+        className="rounded-lg p-4"
+        style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
+      >
         <ReactECharts option={gaugeOption} style={{ height: 300 }} />
-      </div>
+      </motion.div>
     </div>
   );
 }

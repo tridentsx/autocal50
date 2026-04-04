@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"sync"
 	"time"
 
+	"autocal50/internal/calibration"
 	"autocal50/internal/core"
 	"autocal50/internal/display"
 	"autocal50/internal/events"
@@ -19,6 +21,7 @@ import (
 type App struct {
 	ctx            context.Context
 	core           *core.Manager
+	mu             sync.RWMutex
 	activePattern  *pattern.Pattern
 	patternDisplay string // xrandr output name for pattern window
 }
@@ -36,6 +39,9 @@ func (a *App) emitMeasurements() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
+		if !a.core.HasMeter() {
+			continue
+		}
 		r, err := a.core.Measure(a.ctx)
 		if err == nil {
 			wailsRuntime.EventsEmit(a.ctx, events.MeasurementUpdate, r)
@@ -120,11 +126,15 @@ func (a *App) GetPatternBattery() []pattern.Pattern {
 }
 
 func (a *App) SetActivePattern(p pattern.Pattern) {
+	a.mu.Lock()
 	a.activePattern = &p
+	a.mu.Unlock()
 	wailsRuntime.EventsEmit(a.ctx, "pattern:update", p)
 }
 
 func (a *App) GetActivePattern() *pattern.Pattern {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	return a.activePattern
 }
 
@@ -135,10 +145,14 @@ func (a *App) ListDisplays() ([]display.Output, error) {
 }
 
 func (a *App) SetPatternDisplay(name string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.patternDisplay = name
 }
 
 func (a *App) GetPatternDisplay() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	return a.patternDisplay
 }
 
@@ -150,4 +164,27 @@ func (a *App) GetDisplayEDID(name string) (*display.EDID, error) {
 
 func (a *App) ListSerialPorts() ([]string, error) {
 	return serialutil.ListPorts()
+}
+
+// Calibration
+
+func (a *App) GetCalibrationSteps(standard string) ([]calibration.Step, error) {
+	caps, err := a.core.ProjectorCapabilities(a.ctx)
+	if err != nil {
+		// No projector — return all steps (user may adjust via OSD)
+		caps = projector.Capabilities{}
+	}
+	return calibration.BuildRoutine(standard, caps), nil
+}
+
+func (a *App) EvaluateMeasurement(target calibration.ColorTarget, tolerance float64) (calibration.Advice, error) {
+	reading, err := a.core.Measure(a.ctx)
+	if err != nil {
+		return calibration.Advice{}, err
+	}
+	return calibration.Evaluate(target, reading, tolerance), nil
+}
+
+func (a *App) GetCalibrationStandards() map[string]calibration.Standard {
+	return calibration.Standards
 }

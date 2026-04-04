@@ -54,4 +54,9 @@ export const api = {
 
   // EDID
   getDisplayEDID: (name: string) => call<any>("GetDisplayEDID", name),
+
+  // Calibration
+  getCalibrationSteps: (standard: string) => call<any[]>("GetCalibrationSteps", standard),
+  evaluateMeasurement: (target: any, tolerance: number) => call<any>("EvaluateMeasurement", target, tolerance),
+  getCalibrationStandards: () => call<Record<string, any>>("GetCalibrationStandards"),
 };

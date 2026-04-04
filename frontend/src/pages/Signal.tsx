@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { motion } from "framer-motion";
 import { api } from "@/api";
 import type { SignalFormat } from "@/types";
 
@@ -9,15 +10,21 @@ export default function Signal() {
   const [formats, setFormats] = useState<SignalFormat[]>([]);
   const [current, setCurrent] = useState<SignalFormat | null>(null);
 
+  const [error, setError] = useState("");
+
   useEffect(() => {
-    api.getSignalFormats().then(setFormats).catch(() => {});
-    api.currentSignalFormat().then(setCurrent).catch(() => {});
+    api.getSignalFormats().then(setFormats).catch((e) => setError(String(e)));
+    api.currentSignalFormat().then(setCurrent).catch((e) => setError(String(e)));
   }, []);
 
   const apply = async (patch: Partial<SignalFormat>) => {
-    const next = { ...current!, ...patch };
-    await api.applySignalFormat(next);
-    setCurrent(next);
+    try {
+      const next = { ...current!, ...patch };
+      await api.applySignalFormat(next);
+      setCurrent(next);
+    } catch (e: any) {
+      setError(e?.message || String(e));
+    }
   };
 
   if (!current) return <div style={{ color: "var(--muted)" }}>Connect a transport device first.</div>;
@@ -25,6 +32,7 @@ export default function Signal() {
   return (
     <div>
       <h2 className="text-2xl font-bold mb-4">Signal</h2>
+      {error && <div className="mb-4 text-sm" style={{ color: "#ef4444" }}>{error}</div>}
       <div className="grid grid-cols-2 gap-4">
         <Field label="Resolution">
           <select value={current.resolution} onChange={(e) => apply({ resolution: e.target.value })}
@@ -41,31 +49,37 @@ export default function Signal() {
         <Field label="Encoding">
           <div className="flex gap-2">
             {encodings.map((e) => (
-              <button key={e} onClick={() => apply({ encoding: e })}
+              <motion.button key={e} onClick={() => apply({ encoding: e })}
                 className="px-3 py-1 rounded text-sm"
-                style={{ background: current.encoding === e ? "var(--accent)" : "var(--bg)", color: "var(--text)", border: "1px solid var(--border)" }}>
+                animate={{ background: current.encoding === e ? "var(--accent)" : "var(--bg)" }}
+                transition={{ duration: 0.2 }}
+                style={{ color: "var(--text)", border: "1px solid var(--border)" }}>
                 {e}
-              </button>
+              </motion.button>
             ))}
           </div>
         </Field>
         <Field label="Bit Depth">
           <div className="flex gap-2">
             {bitDepths.map((b) => (
-              <button key={b} onClick={() => apply({ bitDepth: b })}
+              <motion.button key={b} onClick={() => apply({ bitDepth: b })}
                 className="px-3 py-1 rounded text-sm"
-                style={{ background: current.bitDepth === b ? "var(--accent)" : "var(--bg)", color: "var(--text)", border: "1px solid var(--border)" }}>
+                animate={{ background: current.bitDepth === b ? "var(--accent)" : "var(--bg)" }}
+                transition={{ duration: 0.2 }}
+                style={{ color: "var(--text)", border: "1px solid var(--border)" }}>
                 {b}-bit
-              </button>
+              </motion.button>
             ))}
           </div>
         </Field>
         <Field label="HDR">
-          <button onClick={() => apply({ hdr: !current.hdr })}
+          <motion.button onClick={() => apply({ hdr: !current.hdr })}
             className="px-4 py-1 rounded text-sm"
-            style={{ background: current.hdr ? "#22c55e" : "var(--bg)", color: "var(--text)", border: "1px solid var(--border)" }}>
+            animate={{ background: current.hdr ? "#22c55e" : "var(--bg)" }}
+            transition={{ duration: 0.2 }}
+            style={{ color: "var(--text)", border: "1px solid var(--border)" }}>
             {current.hdr ? "ON" : "OFF"}
-          </button>
+          </motion.button>
         </Field>
       </div>
     </div>

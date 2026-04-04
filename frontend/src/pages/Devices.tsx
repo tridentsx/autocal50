@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { motion } from "framer-motion";
 import { api } from "@/api";
 
 type DeviceSection = {
@@ -26,7 +27,7 @@ function DeviceCard({ section }: { section: DeviceSection }) {
   const [selectedPort, setSelectedPort] = useState("");
 
   useEffect(() => {
-    section.listDrivers().then((d) => { setDrivers(d); if (d.length) setSelected(d[0]); }).catch(() => {});
+    section.listDrivers().then((d) => { setDrivers(d); if (d.length) setSelected(d[0]); }).catch((e) => setError(String(e)));
   }, []);
 
   useEffect(() => {
@@ -73,9 +74,14 @@ function DeviceCard({ section }: { section: DeviceSection }) {
         style={{ background: connected ? "#ef4444" : "var(--accent)", color: "#fff" }}>
         {connected ? "Disconnect" : "Connect"}
       </button>
-      <div className="mt-2 text-sm" style={{ color: connected ? "#22c55e" : "var(--muted)" }}>
-        {connected ? "● Connected" : "○ Disconnected"}
-      </div>
+      <motion.div className="mt-2 text-sm flex items-center gap-1.5"
+        animate={{ color: connected ? "#22c55e" : "#8b8fa3" }}
+        transition={{ duration: 0.3 }}>
+        <motion.span animate={{ scale: connected ? [1, 1.3, 1] : 1 }} transition={{ duration: 0.3 }}>
+          {connected ? "●" : "○"}
+        </motion.span>
+        {connected ? "Connected" : "Disconnected"}
+      </motion.div>
       {error && <div className="mt-2 text-sm" style={{ color: "#ef4444" }}>{error}</div>}
     </div>
   );
@@ -86,7 +92,14 @@ export default function Devices() {
     <div>
       <h2 className="text-2xl font-bold mb-4">Devices</h2>
       <div className="grid grid-cols-3 gap-4">
-        {sections.map((s) => <DeviceCard key={s.label} section={s} />)}
+        {sections.map((s, i) => (
+          <motion.div key={s.label}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: i * 0.1, type: "spring", stiffness: 200, damping: 20 }}>
+            <DeviceCard section={s} />
+          </motion.div>
+        ))}
       </div>
     </div>
   );

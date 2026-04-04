@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"autocal50/internal/meter"
 	"autocal50/internal/projector"
@@ -15,6 +16,7 @@ type Manager struct {
 	MeterDrivers     map[string]meter.DriverFactory
 	TransportDrivers map[string]transport.DriverFactory
 
+	mu        sync.RWMutex
 	projector projector.Driver
 	meter     meter.Driver
 	transport transport.Driver
@@ -54,11 +56,15 @@ func (m *Manager) ConnectProjector(ctx context.Context, name string, cfg map[str
 	if err := d.Connect(ctx, cfg); err != nil {
 		return err
 	}
+	m.mu.Lock()
 	m.projector = d
+	m.mu.Unlock()
 	return nil
 }
 
 func (m *Manager) DisconnectProjector() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.projector == nil {
 		return nil
 	}
@@ -68,24 +74,33 @@ func (m *Manager) DisconnectProjector() error {
 }
 
 func (m *Manager) ProjectorCapabilities(ctx context.Context) (projector.Capabilities, error) {
-	if m.projector == nil {
+	m.mu.RLock()
+	p := m.projector
+	m.mu.RUnlock()
+	if p == nil {
 		return projector.Capabilities{}, fmt.Errorf("no projector connected")
 	}
-	return m.projector.Capabilities(ctx)
+	return p.Capabilities(ctx)
 }
 
 func (m *Manager) GetProjectorControl(ctx context.Context, id string) (any, error) {
-	if m.projector == nil {
+	m.mu.RLock()
+	p := m.projector
+	m.mu.RUnlock()
+	if p == nil {
 		return nil, fmt.Errorf("no projector connected")
 	}
-	return m.projector.GetControl(ctx, id)
+	return p.GetControl(ctx, id)
 }
 
 func (m *Manager) SetProjectorControl(ctx context.Context, id string, value any) error {
-	if m.projector == nil {
+	m.mu.RLock()
+	p := m.projector
+	m.mu.RUnlock()
+	if p == nil {
 		return fmt.Errorf("no projector connected")
 	}
-	return m.projector.SetControl(ctx, id, value)
+	return p.SetControl(ctx, id, value)
 }
 
 // Meter
@@ -107,11 +122,15 @@ func (m *Manager) ConnectMeter(ctx context.Context, name string, cfg map[string]
 	if err := d.Connect(ctx, cfg); err != nil {
 		return err
 	}
+	m.mu.Lock()
 	m.meter = d
+	m.mu.Unlock()
 	return nil
 }
 
 func (m *Manager) DisconnectMeter() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.meter == nil {
 		return nil
 	}
@@ -120,11 +139,20 @@ func (m *Manager) DisconnectMeter() error {
 	return err
 }
 
+func (m *Manager) HasMeter() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.meter != nil
+}
+
 func (m *Manager) Measure(ctx context.Context) (meter.Reading, error) {
-	if m.meter == nil {
+	m.mu.RLock()
+	mt := m.meter
+	m.mu.RUnlock()
+	if mt == nil {
 		return meter.Reading{}, fmt.Errorf("no meter connected")
 	}
-	return m.meter.Measure(ctx)
+	return mt.Measure(ctx)
 }
 
 // Transport
@@ -146,11 +174,15 @@ func (m *Manager) ConnectTransport(ctx context.Context, name string, cfg map[str
 	if err := d.Connect(ctx, cfg); err != nil {
 		return err
 	}
+	m.mu.Lock()
 	m.transport = d
+	m.mu.Unlock()
 	return nil
 }
 
 func (m *Manager) DisconnectTransport() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.transport == nil {
 		return nil
 	}
@@ -160,22 +192,31 @@ func (m *Manager) DisconnectTransport() error {
 }
 
 func (m *Manager) GetSignalFormats(ctx context.Context) ([]transport.SignalFormat, error) {
-	if m.transport == nil {
+	m.mu.RLock()
+	t := m.transport
+	m.mu.RUnlock()
+	if t == nil {
 		return nil, fmt.Errorf("no transport connected")
 	}
-	return m.transport.GetFormats(ctx)
+	return t.GetFormats(ctx)
 }
 
 func (m *Manager) ApplySignalFormat(ctx context.Context, f transport.SignalFormat) error {
-	if m.transport == nil {
+	m.mu.RLock()
+	t := m.transport
+	m.mu.RUnlock()
+	if t == nil {
 		return fmt.Errorf("no transport connected")
 	}
-	return m.transport.ApplyFormat(ctx, f)
+	return t.ApplyFormat(ctx, f)
 }
 
 func (m *Manager) CurrentSignalFormat(ctx context.Context) (transport.SignalFormat, error) {
-	if m.transport == nil {
+	m.mu.RLock()
+	t := m.transport
+	m.mu.RUnlock()
+	if t == nil {
 		return transport.SignalFormat{}, fmt.Errorf("no transport connected")
 	}
-	return m.transport.CurrentFormat(ctx)
+	return t.CurrentFormat(ctx)
 }

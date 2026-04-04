@@ -101,9 +101,16 @@ export default function PatternRenderer() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
+  const goFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen?.().catch(() => {});
+    }
+  };
+
   return (
     <canvas
       ref={canvasRef}
+      onClick={goFullscreen}
       style={{ position: "fixed", inset: 0, background: "#000", cursor: "none" }}
     />
   );

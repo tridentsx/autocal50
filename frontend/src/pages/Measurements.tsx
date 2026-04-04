@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useParams } from "react-router-dom";
 import ReactECharts from "echarts-for-react";
 
 // --- ST.2084 PQ EOTF ---
@@ -162,10 +163,11 @@ const card = { background: "var(--surface)", border: "1px solid var(--border)" }
 const ax = { axisLine: { lineStyle: { color: "#2a2d3a" } }, axisLabel: { color: "#8b8fa3" }, splitLine: { lineStyle: { color: "#2a2d3a" } } };
 
 export default function Measurements() {
+  const { view } = useParams<{ view: string }>();
   const [stdKey, setStdKey] = useState("rec709");
   const std = standards[stdKey];
   const sim = useMemo(() => simForStandard(std), [stdKey]);
-  const cieImage = useMemo(() => generateCIEImage(320, 280, [0, 0.8], [0, 0.7]), []);
+  const cieImage = useMemo(() => generateCIEImage(640, 560, [0, 0.8], [0, 0.7]), []);
   const isHDR = !!std.hdr;
 
   const chromaticityOpt = {
@@ -174,7 +176,7 @@ export default function Measurements() {
     legend: { data: ["Target", "Measured", "White (target)", "White (measured)", "Grayscale"], textStyle: { color: "#8b8fa3", fontSize: 10 }, top: 0 },
     xAxis: { min: 0, max: 0.8, name: "x", ...ax },
     yAxis: { min: 0, max: 0.7, name: "y", ...ax },
-    graphic: [{ type: "image", left: "center", top: "center", z: -1, style: { image: cieImage, width: 320, height: 280 } }],
+    graphic: [{ type: "image", left: "center", top: "center", z: -1, style: { image: cieImage, width: 640, height: 560 } }],
     series: [
       { type: "line", name: "Target", data: [[...std.r], [...std.g], [...std.b], [...std.r]], lineStyle: { color: "#fff", width: 2 }, symbol: "none", silent: true },
       { type: "line", name: "Measured", data: sim.primaries.map((p) => [p.mx, p.my]).concat([[ sim.primaries[0].mx, sim.primaries[0].my ]]),
@@ -282,23 +284,35 @@ export default function Measurements() {
   const maxDe = Math.max(...sim.deltaE.map((d) => d.value)).toFixed(1);
   const ccAvg = (sim.colorChecker.reduce((s, p) => s + p.deltaE, 0) / sim.colorChecker.length).toFixed(1);
 
-  return (
-    <div>
-      <div className="flex items-center gap-4 mb-6">
-        <h2 className="text-2xl font-bold">Measurements</h2>
-        <select value={stdKey} onChange={(e) => setStdKey(e.target.value)}
-          className="p-2 rounded text-sm" style={{ background: "var(--bg)", color: "var(--text)", border: "1px solid var(--border)" }}>
-          {Object.entries(standards).map(([k, s]) => <option key={k} value={k}>{s.label}</option>)}
-        </select>
-        <span className="text-sm" style={{ color: "var(--muted)" }}>
-          Avg ΔE: <span style={{ color: +avgDe < 2 ? "#22c55e" : "#facc15" }}>{avgDe}</span>
-          {" · "}Max ΔE: <span style={{ color: +maxDe < 2 ? "#22c55e" : +maxDe < 3 ? "#facc15" : "#ef4444" }}>{maxDe}</span>
-          {" · "}CC Avg: <span style={{ color: +ccAvg < 2 ? "#22c55e" : +ccAvg < 3 ? "#facc15" : "#ef4444" }}>{ccAvg}</span>
-        </span>
-      </div>
+  const header = (
+    <div className="flex items-center gap-4 mb-6">
+      <h2 className="text-2xl font-bold">Measurements</h2>
+      <select value={stdKey} onChange={(e) => setStdKey(e.target.value)}
+        className="p-2 rounded text-sm" style={{ background: "var(--bg)", color: "var(--text)", border: "1px solid var(--border)" }}>
+        {Object.entries(standards).map(([k, s]) => <option key={k} value={k}>{s.label}</option>)}
+      </select>
+      <span className="text-sm" style={{ color: "var(--muted)" }}>
+        Avg ΔE: <span style={{ color: +avgDe < 2 ? "#22c55e" : "#facc15" }}>{avgDe}</span>
+        {" · "}Max ΔE: <span style={{ color: +maxDe < 2 ? "#22c55e" : +maxDe < 3 ? "#facc15" : "#ef4444" }}>{maxDe}</span>
+        {" · "}CC Avg: <span style={{ color: +ccAvg < 2 ? "#22c55e" : +ccAvg < 3 ? "#facc15" : "#ef4444" }}>{ccAvg}</span>
+      </span>
+    </div>
+  );
 
-      {/* Pre-Cal Checks */}
-      <div className="rounded-lg p-4 mb-4" style={card}>
+  const fullChart = (title: string, opt: any) => (
+    <div key={view}>
+      {header}
+      <div className="rounded-lg p-4" style={card}>
+        <h3 className="text-sm font-semibold mb-2" style={{ color: "var(--muted)" }}>{title}</h3>
+        <ReactECharts option={opt} notMerge={true} style={{ height: "calc(100vh - 220px)" }} />
+      </div>
+    </div>
+  );
+
+  if (view === "precal") return (
+    <div>
+      {header}
+      <div className="rounded-lg p-4" style={card}>
         <h3 className="text-sm font-semibold mb-3" style={{ color: "var(--muted)" }}>Pre-Calibration Checks</h3>
         <div className="grid grid-cols-5 gap-4">
           <Check label="Black Clipping" pass={pc.blackClip.visible} detail={`Level ${pc.blackClip.level} ${pc.blackClip.visible ? "visible" : "crushed"}`} />
@@ -311,35 +325,17 @@ export default function Measurements() {
           Contrast ratio: {cr > 9999 ? "∞" : cr.toFixed(0)}:1 · Dynamic range: {(Math.log10(cr) * 20).toFixed(0)} dB
         </div>
       </div>
-
-      <div className="grid grid-cols-2 gap-4">
-        <div className="rounded-lg p-4" style={card}>
-          <h3 className="text-sm font-semibold mb-2" style={{ color: "var(--muted)" }}>CIE 1931 — {std.label} vs Measured</h3>
-          <ReactECharts option={chromaticityOpt} style={{ height: 360 }} />
-        </div>
-        <div className="rounded-lg p-4" style={card}>
-          <h3 className="text-sm font-semibold mb-2" style={{ color: "var(--muted)" }}>EOTF — {isHDR ? "PQ ST.2084" : `Gamma ${std.gamma}`}</h3>
-          <ReactECharts option={gammaOpt} style={{ height: 360 }} />
-        </div>
-        <div className="rounded-lg p-4" style={card}>
-          <h3 className="text-sm font-semibold mb-2" style={{ color: "var(--muted)" }}>Delta E (CIE2000) vs {std.label}</h3>
-          <ReactECharts option={deltaEOpt} style={{ height: 360 }} />
-        </div>
-        <div className="rounded-lg p-4" style={card}>
-          <h3 className="text-sm font-semibold mb-2" style={{ color: "var(--muted)" }}>Grayscale Luminance</h3>
-          <ReactECharts option={grayscaleOpt} style={{ height: 360 }} />
-        </div>
-        <div className="rounded-lg p-4" style={card}>
-          <h3 className="text-sm font-semibold mb-2" style={{ color: "var(--muted)" }}>Saturation Sweeps — Target vs Measured</h3>
-          <ReactECharts option={satOpt} style={{ height: 360 }} />
-        </div>
-        <div className="rounded-lg p-4" style={card}>
-          <h3 className="text-sm font-semibold mb-2" style={{ color: "var(--muted)" }}>ColorChecker — ΔE per Patch (avg {ccAvg})</h3>
-          <ReactECharts option={ccOpt} style={{ height: 360 }} />
-        </div>
-      </div>
     </div>
   );
+
+  if (view === "cie") return fullChart(`CIE 1931 — ${std.label} vs Measured`, chromaticityOpt);
+  if (view === "gamma") return fullChart(`EOTF — ${isHDR ? "PQ ST.2084" : `Gamma ${std.gamma}`}`, gammaOpt);
+  if (view === "deltae") return fullChart(`Delta E (CIE2000) vs ${std.label}`, deltaEOpt);
+  if (view === "grayscale") return fullChart("Grayscale Luminance", grayscaleOpt);
+  if (view === "saturation") return fullChart("Saturation Sweeps — Target vs Measured", satOpt);
+  if (view === "colorchecker") return fullChart(`ColorChecker — ΔE per Patch (avg ${ccAvg})`, ccOpt);
+
+  return <div style={{ color: "var(--muted)" }}>Select a measurement view from the sidebar.</div>;
 }
 
 function Check({ label, pass, detail, warn }: { label: string; pass: boolean; detail: string; warn?: boolean }) {
