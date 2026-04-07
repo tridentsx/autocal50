@@ -455,3 +455,13 @@ func (a *App) GenerateICCProfile(standard string) (*calibration.ProfileResult, e
 
 	return result, nil
 }
+
+func (a *App) InstallICCProfile() (*calibration.InstallResult, error) {
+	a.mu.RLock()
+	sess := a.activeSession
+	a.mu.RUnlock()
+	if sess == nil || sess.ProfilePath == "" {
+		return nil, fmt.Errorf("no profile generated — run GenerateICCProfile first")
+	}
+	return calibration.InstallICCProfile(sess.ProfilePath)
+}
