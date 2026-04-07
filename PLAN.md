@@ -1,5 +1,30 @@
 # AutoCal50 — Projector Autocalibration Tool
 
+## Remaining Work — Priority Order
+
+### Critical (can't calibrate without these)
+
+1. **Measurement storage** — `internal/store/` is empty. No way to save measurements, calibration sessions, or before/after results. Everything is lost on close.
+2. **Automated measure-adjust loop** — The calibration wizard UI exists (PreCalStep, WhiteBalanceStep, GammaStep, CMSStep, VerifyStep) but the backend has no automated loop that iterates: show pattern → measure → adjust projector control → re-measure → check convergence → next.
+3. **Profile generation from measurements** — The ICC library can create profiles, but nothing connects actual calibration measurements to `NewDisplayProfileXYZ()`. Need: measured primaries XYZ + measured TRC curves → ICC profile → save to disk.
+4. **Pre-cal diagnostics automation** — The PreCalStep UI exists but the backend sequence (show black → measure → show white → measure → clipping patterns → contrast ratio) isn't automated.
+
+### Important (usable without, but limited)
+
+5. **Local transport UI flow** — The `local-output` driver is registered but the Devices page doesn't show it or let users pick a connector/mode for native HDMI output.
+6. **Signal page ↔ local transport** — Signal page doesn't know about the local transport's mode capabilities (10-bit, HDR toggle).
+7. **Meter calibration** — No dark calibration trigger for the colorimeter before measurements.
+8. **Error handling / retry** — No retry logic for measurement failures, serial timeouts, or projector command failures.
+
+### Polish
+
+9. **Results export** — No PDF report, ICC profile save dialog, or measurement CSV export.
+10. **Settings persistence** — No saved preferences (last projector, meter, standard, connector).
+11. **Measurement charts with real data** — Chart components exist but need real data from calibration runs.
+12. **Additional projector drivers** — Only XGIMI RS232 exists.
+
+---
+
 ## Tech Stack
 
 | Layer | Choice |
