@@ -29,7 +29,8 @@ func NewManager() *Manager {
 			"xgimi-rs232":   projector.NewXGIMIDriver(serialutil.Open),
 		},
 		MeterDrivers: map[string]meter.DriverFactory{
-			"mock-meter": meter.NewMockDriver,
+			"mock-meter":      meter.NewMockDriver,
+			"argyll-spotread": meter.NewArgyllDriver,
 		},
 		TransportDrivers: map[string]transport.DriverFactory{
 			"mock-transport": transport.NewMockDriver,

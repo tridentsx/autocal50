@@ -338,6 +338,7 @@ Backend sends measurement datasets. Frontend computes visual representation.
 - [ ] Settings / preferences page
 - [ ] Undo/redo for control changes
 - [ ] Session history and comparison
+- [ ] CGATS (.ti1/.ti3/.cal) import/export for DisplayCAL/ArgyllCMS interoperability
 
 ---
 

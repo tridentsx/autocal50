@@ -17,6 +17,7 @@ const sections: DeviceSection[] = [
 ];
 
 const serialDrivers = new Set(["xgimi-rs232"]);
+const argyllDrivers = new Set(["argyll-spotread"]);
 
 function DeviceCard({ section }: { section: DeviceSection }) {
   const [drivers, setDrivers] = useState<string[]>([]);
@@ -25,6 +26,8 @@ function DeviceCard({ section }: { section: DeviceSection }) {
   const [error, setError] = useState("");
   const [ports, setPorts] = useState<string[]>([]);
   const [selectedPort, setSelectedPort] = useState("");
+  const [argyllPort, setArgyllPort] = useState("");
+  const [ccmxPath, setCcmxPath] = useState("");
 
   useEffect(() => {
     section.listDrivers().then((d) => { setDrivers(d); if (d.length) setSelected(d[0]); }).catch((e) => setError(String(e)));
@@ -37,6 +40,7 @@ function DeviceCard({ section }: { section: DeviceSection }) {
   }, [selected]);
 
   const showSerial = section.needsSerial && serialDrivers.has(selected);
+  const showArgyll = argyllDrivers.has(selected);
 
   const toggle = async () => {
     setError("");
@@ -45,6 +49,10 @@ function DeviceCard({ section }: { section: DeviceSection }) {
       else {
         const cfg: Record<string, any> = {};
         if (showSerial && selectedPort) cfg.device = selectedPort;
+        if (showArgyll) {
+          if (argyllPort) cfg.port = argyllPort;
+          if (ccmxPath) cfg.ccmx = ccmxPath;
+        }
         await section.connect(selected, cfg);
         setConnected(true);
       }
@@ -67,6 +75,17 @@ function DeviceCard({ section }: { section: DeviceSection }) {
           {ports.length === 0 && <option value="">No serial ports found</option>}
           {ports.map((p) => <option key={p} value={p}>{p}</option>)}
         </select>
+      )}
+
+      {showArgyll && (
+        <>
+          <input value={argyllPort} onChange={(e) => setArgyllPort(e.target.value)}
+            placeholder="Instrument port (blank = auto)"
+            className="w-full p-2 rounded mb-2 text-sm" style={{ background: "var(--bg)", color: "var(--text)", border: "1px solid var(--border)" }} />
+          <input value={ccmxPath} onChange={(e) => setCcmxPath(e.target.value)}
+            placeholder="CCMX correction file (optional)"
+            className="w-full p-2 rounded mb-3 text-sm" style={{ background: "var(--bg)", color: "var(--text)", border: "1px solid var(--border)" }} />
+        </>
       )}
 
       <button onClick={toggle}

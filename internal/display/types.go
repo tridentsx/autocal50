@@ -2,6 +2,15 @@ package display
 
 import "fmt"
 
+// Mode is a display mode (resolution + refresh rate).
+type Mode struct {
+	Width     int     `json:"width"`
+	Height    int     `json:"height"`
+	RefreshHz float64 `json:"refreshHz"`
+	Preferred bool    `json:"preferred"`
+	Current   bool    `json:"current"`
+}
+
 type Output struct {
 	Name      string  `json:"name"`
 	Connected bool    `json:"connected"`
@@ -11,6 +20,7 @@ type Output struct {
 	X         int     `json:"x"`
 	Y         int     `json:"y"`
 	RefreshHz float64 `json:"refreshHz"`
+	Modes     []Mode  `json:"modes,omitempty"`
 }
 
 type EDID struct {

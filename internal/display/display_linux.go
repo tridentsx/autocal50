@@ -3,60 +3,101 @@
 package display
 
 import (
-	"bufio"
-	"fmt"
-	"os/exec"
-	"regexp"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
 
-// re matches lines like: HDMI-1 connected primary 3840x2160+0+0 ...
-// or: DP-1 connected 1920x1080+3840+0 ...
-var outputRe = regexp.MustCompile(
-	`^(\S+)\s+(connected|disconnected)\s*(primary)?\s*(?:(\d+)x(\d+)\+(\d+)\+(\d+))?`,
-)
-
-// modeRe matches the active mode line like: 3840x2160     60.00*+
-var modeRe = regexp.MustCompile(`^\s+(\d+)x(\d+)\s+([\d.]+)\*`)
-
+// ListOutputs enumerates display connectors via sysfs.
+// Works on X11, Wayland, and bare TTY — no dependency on xrandr.
 func ListOutputs() ([]Output, error) {
-	out, err := exec.Command("xrandr", "--current").Output()
+	dirs, err := filepath.Glob("/sys/class/drm/card*-*")
 	if err != nil {
-		return nil, fmt.Errorf("xrandr: %w", err)
+		return nil, err
 	}
 
 	var outputs []Output
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
-	var current *Output
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		if m := outputRe.FindStringSubmatch(line); m != nil {
-			o := Output{
-				Name:      m[1],
-				Connected: m[2] == "connected",
-				Primary:   m[3] == "primary",
-			}
-			if m[4] != "" {
-				o.Width, _ = strconv.Atoi(m[4])
-				o.Height, _ = strconv.Atoi(m[5])
-				o.X, _ = strconv.Atoi(m[6])
-				o.Y, _ = strconv.Atoi(m[7])
-			}
-			outputs = append(outputs, o)
-			current = &outputs[len(outputs)-1]
+	for _, dir := range dirs {
+		base := filepath.Base(dir)
+		// card0-HDMI-A-1 → HDMI-A-1
+		parts := strings.SplitN(base, "-", 2)
+		if len(parts) < 2 {
 			continue
 		}
+		name := parts[1]
 
-		// Grab refresh rate from the active mode line
-		if current != nil && current.RefreshHz == 0 {
-			if m := modeRe.FindStringSubmatch(line); m != nil {
-				current.RefreshHz, _ = strconv.ParseFloat(m[3], 64)
+		status := readFile(filepath.Join(dir, "status"))
+		connected := strings.TrimSpace(status) == "connected"
+
+		o := Output{
+			Name:      name,
+			Connected: connected,
+		}
+
+		if connected {
+			o.Modes = parseModes(filepath.Join(dir, "modes"))
+			for _, m := range o.Modes {
+				if m.Preferred || m.Current {
+					o.Width = m.Width
+					o.Height = m.Height
+					o.RefreshHz = m.RefreshHz
+					break
+				}
+			}
+			// Fallback to first mode if none marked preferred.
+			if o.Width == 0 && len(o.Modes) > 0 {
+				o.Width = o.Modes[0].Width
+				o.Height = o.Modes[0].Height
+				o.RefreshHz = o.Modes[0].RefreshHz
 			}
 		}
+
+		outputs = append(outputs, o)
 	}
 
 	return outputs, nil
+}
+
+// parseModes reads /sys/class/drm/card*-*/modes which lists one mode per line
+// in the format "3840x2160" (sysfs doesn't include refresh in the modes file,
+// but we can get it from the EDID or DRM ioctls later).
+// For now we parse what sysfs gives us.
+func parseModes(path string) []Mode {
+	data := readFile(path)
+	if data == "" {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var modes []Mode
+	for i, line := range strings.Split(strings.TrimSpace(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || seen[line] {
+			continue
+		}
+		seen[line] = true
+		parts := strings.SplitN(line, "x", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		w, _ := strconv.Atoi(parts[0])
+		h, _ := strconv.Atoi(parts[1])
+		if w == 0 || h == 0 {
+			continue
+		}
+		modes = append(modes, Mode{
+			Width:     w,
+			Height:    h,
+			Preferred: i == 0, // first mode in sysfs is typically preferred
+		})
+	}
+	return modes
+}
+
+func readFile(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
