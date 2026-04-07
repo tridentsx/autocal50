@@ -108,6 +108,25 @@ func (d *ArgyllDriver) kill() error {
 	return nil
 }
 
+// DarkCal triggers a dark calibration on the instrument.
+// The sensor should be covered or pointed at a dark surface.
+func (d *ArgyllDriver) DarkCal(_ context.Context) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.stdin == nil {
+		return fmt.Errorf("not connected")
+	}
+	// spotread: 'k' triggers calibration
+	if _, err := d.stdin.Write([]byte("k")); err != nil {
+		return fmt.Errorf("trigger dark cal: %w", err)
+	}
+	// Wait for calibration to complete (spotread prints prompts).
+	if err := d.waitForPrompt(30 * time.Second); err != nil {
+		return fmt.Errorf("dark cal: %w", err)
+	}
+	return nil
+}
+
 // Yxy regex: matches "Yxy: 13.456 0.3127 0.3290" or similar
 var yxyRe = regexp.MustCompile(`Yxy:\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)`)
 

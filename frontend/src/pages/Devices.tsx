@@ -18,6 +18,7 @@ const sections: DeviceSection[] = [
 
 const serialDrivers = new Set(["xgimi-rs232"]);
 const argyllDrivers = new Set(["argyll-spotread"]);
+const localDrivers = new Set(["local-output"]);
 
 function DeviceCard({ section }: { section: DeviceSection }) {
   const [drivers, setDrivers] = useState<string[]>([]);
@@ -28,6 +29,8 @@ function DeviceCard({ section }: { section: DeviceSection }) {
   const [selectedPort, setSelectedPort] = useState("");
   const [argyllPort, setArgyllPort] = useState("");
   const [ccmxPath, setCcmxPath] = useState("");
+  const [displays, setDisplays] = useState<any[]>([]);
+  const [selectedDisplay, setSelectedDisplay] = useState("");
 
   useEffect(() => {
     section.listDrivers().then((d) => { setDrivers(d); if (d.length) setSelected(d[0]); }).catch((e) => setError(String(e)));
@@ -37,10 +40,18 @@ function DeviceCard({ section }: { section: DeviceSection }) {
     if (section.needsSerial && serialDrivers.has(selected)) {
       api.listSerialPorts().then((p) => { setPorts(p); if (p.length) setSelectedPort(p[0]); }).catch(() => setPorts([]));
     }
+    if (localDrivers.has(selected)) {
+      api.listDisplays().then((d: any[]) => {
+        const connected = d.filter((o: any) => o.connected);
+        setDisplays(connected);
+        if (connected.length) setSelectedDisplay(connected[0].name);
+      }).catch(() => setDisplays([]));
+    }
   }, [selected]);
 
   const showSerial = section.needsSerial && serialDrivers.has(selected);
   const showArgyll = argyllDrivers.has(selected);
+  const showLocal = localDrivers.has(selected);
 
   const toggle = async () => {
     setError("");
@@ -53,6 +64,7 @@ function DeviceCard({ section }: { section: DeviceSection }) {
           if (argyllPort) cfg.port = argyllPort;
           if (ccmxPath) cfg.ccmx = ccmxPath;
         }
+        if (showLocal && selectedDisplay) cfg.connector = selectedDisplay;
         await section.connect(selected, cfg);
         setConnected(true);
       }
@@ -86,6 +98,18 @@ function DeviceCard({ section }: { section: DeviceSection }) {
             placeholder="CCMX correction file (optional)"
             className="w-full p-2 rounded mb-3 text-sm" style={{ background: "var(--bg)", color: "var(--text)", border: "1px solid var(--border)" }} />
         </>
+      )}
+
+      {showLocal && (
+        <select value={selectedDisplay} onChange={(e) => setSelectedDisplay(e.target.value)}
+          className="w-full p-2 rounded mb-3" style={{ background: "var(--bg)", color: "var(--text)", border: "1px solid var(--border)" }}>
+          {displays.length === 0 && <option value="">No displays found</option>}
+          {displays.map((d: any) => (
+            <option key={d.name} value={d.name}>
+              {d.name} {d.width && `(${d.width}×${d.height})`} {d.primary ? "— primary" : ""}
+            </option>
+          ))}
+        </select>
       )}
 
       <button onClick={toggle}

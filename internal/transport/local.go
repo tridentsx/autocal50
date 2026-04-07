@@ -70,11 +70,16 @@ func (d *LocalDriver) GetFormats(_ context.Context) ([]SignalFormat, error) {
 	modes := d.output.Modes()
 	var formats []SignalFormat
 	for _, m := range modes {
+		bd := m.BitDepth
+		if bd == 0 {
+			bd = 8
+		}
 		formats = append(formats, SignalFormat{
 			Resolution: fmt.Sprintf("%dx%d", m.Width, m.Height),
 			RefreshHz:  m.RefreshHz,
 			Encoding:   "RGB",
-			BitDepth:   8,
+			BitDepth:   bd,
+			HDR:        m.HDR,
 		})
 	}
 	return formats, nil
@@ -85,6 +90,7 @@ func (d *LocalDriver) ApplyFormat(_ context.Context, f SignalFormat) error {
 	fmt.Sscanf(f.Resolution, "%dx%d", &w, &h)
 	if err := d.output.SetMode(patternout.Mode{
 		Width: w, Height: h, RefreshHz: f.RefreshHz,
+		BitDepth: f.BitDepth, HDR: f.HDR,
 	}); err != nil {
 		return err
 	}

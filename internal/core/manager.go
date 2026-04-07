@@ -103,7 +103,9 @@ func (m *Manager) SetProjectorControl(ctx context.Context, id string, value any)
 	if p == nil {
 		return fmt.Errorf("no projector connected")
 	}
-	return p.SetControl(ctx, id, value)
+	return RetryVoid(ctx, 3, func() error {
+		return p.SetControl(ctx, id, value)
+	})
 }
 
 // Meter
@@ -155,7 +157,26 @@ func (m *Manager) Measure(ctx context.Context) (meter.Reading, error) {
 	if mt == nil {
 		return meter.Reading{}, fmt.Errorf("no meter connected")
 	}
-	return mt.Measure(ctx)
+	return Retry(ctx, 3, func() (meter.Reading, error) {
+		return mt.Measure(ctx)
+	})
+}
+
+// DarkCalMeter triggers dark calibration if the meter supports it.
+func (m *Manager) DarkCalMeter(ctx context.Context) error {
+	m.mu.RLock()
+	mt := m.meter
+	m.mu.RUnlock()
+	if mt == nil {
+		return fmt.Errorf("no meter connected")
+	}
+	type darkCaler interface {
+		DarkCal(context.Context) error
+	}
+	if dc, ok := mt.(darkCaler); ok {
+		return dc.DarkCal(ctx)
+	}
+	return fmt.Errorf("meter does not support dark calibration")
 }
 
 // Transport

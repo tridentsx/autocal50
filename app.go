@@ -99,6 +99,10 @@ func (a *App) Measure() (meter.Reading, error) {
 	return a.core.Measure(a.ctx)
 }
 
+func (a *App) DarkCalMeter() error {
+	return a.core.DarkCalMeter(a.ctx)
+}
+
 // Transport
 
 func (a *App) ListTransportDrivers() []string {
@@ -464,4 +468,22 @@ func (a *App) InstallICCProfile() (*calibration.InstallResult, error) {
 		return nil, fmt.Errorf("no profile generated — run GenerateICCProfile first")
 	}
 	return calibration.InstallICCProfile(sess.ProfilePath)
+}
+
+func (a *App) ExportSessionCSV(sessionID, path string) error {
+	sess, err := a.store.Load(sessionID)
+	if err != nil {
+		return err
+	}
+	return store.ExportCSV(sess, path)
+}
+
+// Settings
+
+func (a *App) GetSettings() store.Settings {
+	return store.LoadSettings()
+}
+
+func (a *App) SaveSettings(s store.Settings) error {
+	return store.SaveSettings(s)
 }
