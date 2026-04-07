@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"autocal50/internal/pattern"
 	"autocal50/internal/projector"
 	"autocal50/internal/serialutil"
+	"autocal50/internal/store"
 	"autocal50/internal/transport"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -21,13 +23,16 @@ import (
 type App struct {
 	ctx            context.Context
 	core           *core.Manager
+	store          *store.Store
 	mu             sync.RWMutex
 	activePattern  *pattern.Pattern
-	patternDisplay string // xrandr output name for pattern window
+	activeSession  *store.Session
+	patternDisplay string
 }
 
 func NewApp() *App {
-	return &App{core: core.NewManager()}
+	st, _ := store.New(store.DefaultDir())
+	return &App{core: core.NewManager(), store: st}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -191,4 +196,105 @@ func (a *App) EvaluateMeasurement(target calibration.ColorTarget, tolerance floa
 
 func (a *App) GetCalibrationStandards() map[string]calibration.Standard {
 	return calibration.Standards
+}
+
+// Sessions
+
+func (a *App) StartSession(standard string) (*store.Session, error) {
+	projName := ""
+	meterName := ""
+	sess := store.NewSession(standard, projName, meterName)
+	a.mu.Lock()
+	a.activeSession = sess
+	a.mu.Unlock()
+	return sess, nil
+}
+
+func (a *App) GetActiveSession() *store.Session {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.activeSession
+}
+
+func (a *App) SaveSession() error {
+	a.mu.RLock()
+	sess := a.activeSession
+	a.mu.RUnlock()
+	if sess == nil {
+		return fmt.Errorf("no active session")
+	}
+	return a.store.Save(sess)
+}
+
+func (a *App) ListSessions() ([]store.Session, error) {
+	return a.store.List()
+}
+
+func (a *App) LoadSession(id string) (*store.Session, error) {
+	sess, err := a.store.Load(id)
+	if err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	a.activeSession = sess
+	a.mu.Unlock()
+	return sess, nil
+}
+
+func (a *App) DeleteSession(id string) error {
+	return a.store.Delete(id)
+}
+
+func (a *App) RecordMeasurement(step string, target calibration.ColorTarget, tolerance float64) (*store.Measurement, error) {
+	reading, err := a.core.Measure(a.ctx)
+	if err != nil {
+		return nil, err
+	}
+	advice := calibration.Evaluate(target, reading, tolerance)
+	m := store.Measurement{
+		PatternID: "",
+		Target:    target,
+		Reading:   reading,
+		DeltaE:    advice.DeltaE,
+		Passed:    advice.Passed,
+		Timestamp: time.Now(),
+	}
+	a.mu.RLock()
+	pat := a.activePattern
+	a.mu.RUnlock()
+	if pat != nil {
+		m.PatternID = pat.ID
+	}
+
+	a.mu.Lock()
+	if a.activeSession != nil {
+		a.activeSession.AddMeasurement(step, m)
+	}
+	a.mu.Unlock()
+
+	// Auto-save after each measurement.
+	if a.activeSession != nil {
+		_ = a.store.Save(a.activeSession)
+	}
+
+	return &m, nil
+}
+
+func (a *App) SnapshotControls(label string) error {
+	caps, err := a.core.ProjectorCapabilities(a.ctx)
+	if err != nil {
+		return err
+	}
+	controls := make(map[string]any)
+	for _, c := range caps.Controls {
+		if v, err := a.core.GetProjectorControl(a.ctx, c.ID); err == nil {
+			controls[c.ID] = v
+		}
+	}
+	a.mu.Lock()
+	if a.activeSession != nil {
+		a.activeSession.AddSnapshot(label, controls)
+	}
+	a.mu.Unlock()
+	return nil
 }
