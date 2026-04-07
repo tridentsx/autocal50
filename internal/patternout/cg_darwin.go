@@ -80,15 +80,15 @@ static PatternWindow createPatternWindow(int screenIdx) {
 	[win setContentView:view];
 	[win makeKeyAndOrderFront:nil];
 
-	pw.window = (__bridge_retained void *)win;
-	pw.view = (__bridge_retained void *)view;
+	pw.window = (void *)win;
+	pw.view = (void *)view;
 	pw.width = (int)frame.size.width;
 	pw.height = (int)frame.size.height;
 	return pw;
 }
 
 static void updatePatternView(void *viewPtr, unsigned char *data, int w, int h, int stride) {
-	PatternView *view = (__bridge PatternView *)viewPtr;
+	PatternView *view = (PatternView *)viewPtr;
 	view->pixelData = data;
 	view->pixWidth = w;
 	view->pixHeight = h;
@@ -101,13 +101,13 @@ static void updatePatternView(void *viewPtr, unsigned char *data, int w, int h, 
 static void destroyPatternWindow(void *winPtr, void *viewPtr) {
 	[NSCursor unhide];
 	if (winPtr) {
-		NSWindow *win = (__bridge_transfer NSWindow *)winPtr;
+		NSWindow *win = (NSWindow *)winPtr;
 		dispatch_async(dispatch_get_main_queue(), ^{
 			[win close];
 		});
 	}
 	if (viewPtr) {
-		(void)(__bridge_transfer PatternView *)viewPtr;
+		(void)viewPtr; // prevent leak warning
 	}
 }
 
