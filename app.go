@@ -400,3 +400,58 @@ func (a *App) RunVerification(standard string) (map[string]float64, error) {
 	_ = a.SaveSession()
 	return map[string]float64{"avgDeltaE": avg, "maxDeltaE": max}, nil
 }
+
+// Profile Generation
+
+func (a *App) GenerateICCProfile(standard string) (*calibration.ProfileResult, error) {
+	std, ok := calibration.Standards[standard]
+	if !ok {
+		return nil, fmt.Errorf("unknown standard: %s", standard)
+	}
+
+	eng := a.buildEngine()
+
+	// Measure white.
+	eng.ShowPattern("gray-win-100")
+	time.Sleep(time.Second)
+	white, err := a.core.Measure(a.ctx)
+	if err != nil {
+		return nil, fmt.Errorf("measure white: %w", err)
+	}
+
+	// Measure primaries.
+	var primaries [3]meter.Reading
+	for i, pid := range []string{"win-Red", "win-Green", "win-Blue"} {
+		eng.ShowPattern(pid)
+		time.Sleep(time.Second)
+		r, err := a.core.Measure(a.ctx)
+		if err != nil {
+			return nil, fmt.Errorf("measure %s: %w", pid, err)
+		}
+		primaries[i] = r
+	}
+
+	// Gamma sweep.
+	gamma, err := eng.RunGammaSweep(a.ctx, std, 20)
+	if err != nil {
+		return nil, fmt.Errorf("gamma sweep: %w", err)
+	}
+
+	// Generate profile.
+	desc := fmt.Sprintf("AutoCal50 %s", std.Label)
+	outDir := store.DefaultDir() + "/../profiles"
+	result, err := calibration.GenerateProfile(primaries, white, gamma, desc, outDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// Store path in session.
+	a.mu.Lock()
+	if a.activeSession != nil {
+		a.activeSession.ProfilePath = result.Path
+	}
+	a.mu.Unlock()
+	_ = a.SaveSession()
+
+	return result, nil
+}
