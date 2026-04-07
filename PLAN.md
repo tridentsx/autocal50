@@ -339,6 +339,7 @@ Backend sends measurement datasets. Frontend computes visual representation.
 - [ ] Undo/redo for control changes
 - [ ] Session history and comparison
 - [ ] CGATS (.ti1/.ti3/.cal) import/export for DisplayCAL/ArgyllCMS interoperability
+- [ ] YCbCr 4:2:0/4:2:2 output mode to match Blu-ray player signal format (verify projector's chroma processing path)
 
 ---
 
