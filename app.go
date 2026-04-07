@@ -129,7 +129,11 @@ func (a *App) SetActivePattern(p pattern.Pattern) {
 	a.mu.Lock()
 	a.activePattern = &p
 	a.mu.Unlock()
-	wailsRuntime.EventsEmit(a.ctx, "pattern:update", p)
+
+	// Try native output first (DRM/DXGI/Metal), fall back to browser popup.
+	if !a.core.RenderPattern(p) {
+		wailsRuntime.EventsEmit(a.ctx, "pattern:update", p)
+	}
 }
 
 func (a *App) GetActivePattern() *pattern.Pattern {

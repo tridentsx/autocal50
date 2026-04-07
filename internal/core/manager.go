@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"autocal50/internal/meter"
+	"autocal50/internal/pattern"
 	"autocal50/internal/projector"
 	"autocal50/internal/serialutil"
 	"autocal50/internal/transport"
@@ -34,6 +35,7 @@ func NewManager() *Manager {
 		},
 		TransportDrivers: map[string]transport.DriverFactory{
 			"mock-transport": transport.NewMockDriver,
+			"local-output":   transport.NewLocalDriver,
 		},
 	}
 }
@@ -220,4 +222,21 @@ func (m *Manager) CurrentSignalFormat(ctx context.Context) (transport.SignalForm
 		return transport.SignalFormat{}, fmt.Errorf("no transport connected")
 	}
 	return t.CurrentFormat(ctx)
+}
+
+// RenderPattern sends a pattern to the native output if a local transport
+// is connected. Returns false if no native output is available (caller
+// should fall back to the browser popup).
+func (m *Manager) RenderPattern(p pattern.Pattern) bool {
+	m.mu.RLock()
+	t := m.transport
+	m.mu.RUnlock()
+	if t == nil {
+		return false
+	}
+	local, ok := t.(*transport.LocalDriver)
+	if !ok {
+		return false
+	}
+	return local.Output().Render(p) == nil
 }
