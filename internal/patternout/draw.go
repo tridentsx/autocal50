@@ -147,3 +147,31 @@ func drawHLine(buf []byte, w, stride, y int, c pattern.RGB) {
 		buf[off+x*4+3] = 0xFF
 	}
 }
+
+// DrawRGBA10 renders a pattern into a 10-bit R10G10B10A2 pixel buffer.
+// Each pixel is a uint32: [R:10][G:10][B:10][A:2] packed little-endian.
+func DrawRGBA10(buf []byte, w, h, stride int, p pattern.Pattern) {
+	// Render 8-bit first into a temp buffer, then upscale.
+	tmp := make([]byte, stride*h)
+	DrawRGBA(tmp, w, h, stride, p)
+
+	// Convert BGRX8888 → R10G10B10A2.
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			off := y*stride + x*4
+			b := uint32(tmp[off])
+			g := uint32(tmp[off+1])
+			r := uint32(tmp[off+2])
+			// Scale 8-bit [0..255] to 10-bit [0..1023]: v*1023/255 ≈ v*4+v/64
+			r10 := (r*1023 + 127) / 255
+			g10 := (g*1023 + 127) / 255
+			b10 := (b*1023 + 127) / 255
+			// Pack as R10G10B10A2 (little-endian uint32).
+			pixel := r10 | (g10 << 10) | (b10 << 20) | (3 << 30)
+			buf[off] = byte(pixel)
+			buf[off+1] = byte(pixel >> 8)
+			buf[off+2] = byte(pixel >> 16)
+			buf[off+3] = byte(pixel >> 24)
+		}
+	}
+}

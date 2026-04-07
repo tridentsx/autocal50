@@ -4,11 +4,49 @@ package patternout
 
 /*
 #cgo CFLAGS: -x objective-c
-#cgo LDFLAGS: -framework Cocoa -framework CoreGraphics
+#cgo LDFLAGS: -framework Cocoa -framework Metal -framework QuartzCore -framework CoreGraphics
 
 #import <Cocoa/Cocoa.h>
+#import <Metal/Metal.h>
+#import <QuartzCore/CAMetalLayer.h>
+#import <CoreGraphics/CoreGraphics.h>
 
-// Ensure NSApplication is initialized.
+// --- Display helpers ---
+
+static int screenCount(void) {
+	return (int)[[NSScreen screens] count];
+}
+
+static CGDirectDisplayID displayIDForScreen(int idx) {
+	NSArray *screens = [NSScreen screens];
+	if (idx < 0 || idx >= (int)[screens count]) return 0;
+	NSScreen *screen = [screens objectAtIndex:idx];
+	return [[[screen deviceDescription] objectForKey:@"NSScreenNumber"] unsignedIntValue];
+}
+
+static void screenInfo(int idx, int *w, int *h, double *hz) {
+	CGDirectDisplayID did = displayIDForScreen(idx);
+	if (!did) return;
+	*w = (int)CGDisplayPixelsWide(did);
+	*h = (int)CGDisplayPixelsHigh(did);
+	CGDisplayModeRef mode = CGDisplayCopyDisplayMode(did);
+	if (mode) {
+		*hz = CGDisplayModeGetRefreshRate(mode);
+		CGDisplayModeRelease(mode);
+	}
+}
+
+// --- Metal output ---
+
+typedef struct {
+	void *window;       // NSWindow*
+	void *metalLayer;   // CAMetalLayer*
+	void *device;       // id<MTLDevice>
+	void *cmdQueue;     // id<MTLCommandQueue>
+	CGDirectDisplayID displayID;
+	int width, height;
+} MetalOutput;
+
 static void ensureApp(void) {
 	if (NSApp == nil) {
 		[NSApplication sharedApplication];
@@ -16,51 +54,30 @@ static void ensureApp(void) {
 	}
 }
 
-// PatternView draws from a pixel buffer.
-@interface PatternView : NSView {
-	@public
-	unsigned char *pixelData;
-	int pixWidth, pixHeight, pixStride;
-}
-@end
-
-@implementation PatternView
-- (void)drawRect:(NSRect)dirtyRect {
-	if (!pixelData) return;
-	NSBitmapImageRep *rep = [[NSBitmapImageRep alloc]
-		initWithBitmapDataPlanes:&pixelData
-		pixelsWide:pixWidth
-		pixelsHigh:pixHeight
-		bitsPerSample:8
-		samplesPerPixel:4
-		hasAlpha:YES
-		isPlanar:NO
-		colorSpaceName:NSDeviceRGBColorSpace
-		bitmapFormat:0
-		bytesPerRow:pixStride
-		bitsPerPixel:32];
-	NSImage *img = [[NSImage alloc] initWithSize:NSMakeSize(pixWidth, pixHeight)];
-	[img addRepresentation:rep];
-	[img drawInRect:self.bounds fromRect:NSZeroRect operation:NSCompositingOperationCopy fraction:1.0];
-}
-@end
-
-typedef struct {
-	void *window;
-	void *view;
-	int width;
-	int height;
-} PatternWindow;
-
-// Create a fullscreen borderless window on the screen at index screenIdx.
-static PatternWindow createPatternWindow(int screenIdx) {
+static MetalOutput metalOpen(int screenIdx, int use10bit) {
 	ensureApp();
-	PatternWindow pw = {0};
+	MetalOutput mo = {0};
 
+	CGDirectDisplayID did = displayIDForScreen(screenIdx);
+	if (!did) return mo;
+
+	// Capture the display for exclusive access.
+	if (CGDisplayCapture(did) != kCGErrorSuccess) return mo;
+	mo.displayID = did;
+
+	mo.width = (int)CGDisplayPixelsWide(did);
+	mo.height = (int)CGDisplayPixelsHigh(did);
+
+	// Create Metal device.
+	id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+	if (!device) { CGDisplayRelease(did); return mo; }
+	mo.device = (void *)device;
+
+	id<MTLCommandQueue> queue = [device newCommandQueue];
+	mo.cmdQueue = (void *)queue;
+
+	// Create fullscreen window on captured display.
 	NSArray *screens = [NSScreen screens];
-	if (screenIdx < 0 || screenIdx >= (int)[screens count]) {
-		return pw;
-	}
 	NSScreen *screen = [screens objectAtIndex:screenIdx];
 	NSRect frame = [screen frame];
 
@@ -70,66 +87,103 @@ static PatternWindow createPatternWindow(int screenIdx) {
 		backing:NSBackingStoreBuffered
 		defer:NO
 		screen:screen];
-	[win setLevel:NSScreenSaverWindowLevel + 1];
+	[win setLevel:CGShieldingWindowLevel()];
 	[win setBackgroundColor:[NSColor blackColor]];
-	[win setCollectionBehavior:NSWindowCollectionBehaviorFullScreenPrimary |
-		NSWindowCollectionBehaviorStationary];
-	[NSCursor hide];
 
-	PatternView *view = [[PatternView alloc] initWithFrame:frame];
+	// Set up Metal layer.
+	NSView *view = [[NSView alloc] initWithFrame:frame];
+	[view setWantsLayer:YES];
+
+	CAMetalLayer *layer = [CAMetalLayer layer];
+	layer.device = device;
+	layer.pixelFormat = use10bit ? MTLPixelFormatBGR10A2Unorm : MTLPixelFormatBGRA8Unorm;
+	layer.framebufferOnly = NO;
+	layer.drawableSize = CGSizeMake(mo.width, mo.height);
+	layer.wantsExtendedDynamicRangeContent = YES;
+	[view setLayer:layer];
+
 	[win setContentView:view];
 	[win makeKeyAndOrderFront:nil];
+	[NSCursor hide];
 
-	pw.window = (void *)win;
-	pw.view = (void *)view;
-	pw.width = (int)frame.size.width;
-	pw.height = (int)frame.size.height;
-	return pw;
+	mo.window = (void *)win;
+	mo.metalLayer = (void *)layer;
+	return mo;
 }
 
-static void updatePatternView(void *viewPtr, unsigned char *data, int w, int h, int stride) {
-	PatternView *view = (PatternView *)viewPtr;
-	view->pixelData = data;
-	view->pixWidth = w;
-	view->pixHeight = h;
-	view->pixStride = stride;
-	dispatch_async(dispatch_get_main_queue(), ^{
-		[view setNeedsDisplay:YES];
-	});
+static int metalRender(MetalOutput *mo, const unsigned char *data, int w, int h, int stride) {
+	CAMetalLayer *layer = (CAMetalLayer *)mo->metalLayer;
+	id<MTLCommandQueue> queue = (id<MTLCommandQueue>)mo->cmdQueue;
+
+	id<CAMetalDrawable> drawable = [layer nextDrawable];
+	if (!drawable) return -1;
+
+	id<MTLTexture> tex = [drawable texture];
+	MTLRegion region = MTLRegionMake2D(0, 0, w, h);
+	[tex replaceRegion:region mipmapLevel:0 withBytes:data bytesPerRow:stride];
+
+	id<MTLCommandBuffer> cmdBuf = [queue commandBuffer];
+	[cmdBuf presentDrawable:drawable];
+	[cmdBuf commit];
+	[cmdBuf waitUntilCompleted];
+	return 0;
 }
 
-static void destroyPatternWindow(void *winPtr, void *viewPtr) {
+static void metalClose(MetalOutput *mo) {
 	[NSCursor unhide];
-	if (winPtr) {
-		NSWindow *win = (NSWindow *)winPtr;
-		dispatch_async(dispatch_get_main_queue(), ^{
-			[win close];
-		});
+	if (mo->window) {
+		NSWindow *win = (NSWindow *)mo->window;
+		[win close];
+		mo->window = NULL;
 	}
-	if (viewPtr) {
-		(void)viewPtr; // prevent leak warning
+	if (mo->displayID) {
+		CGDisplayRelease(mo->displayID);
+		mo->displayID = 0;
 	}
+	mo->metalLayer = NULL;
+	mo->device = NULL;
+	mo->cmdQueue = NULL;
 }
 
-static int screenCount(void) {
-	ensureApp();
-	return (int)[[NSScreen screens] count];
+static int metalSetMode(CGDirectDisplayID did, int w, int h, double hz) {
+	CFArrayRef allModes = CGDisplayCopyAllDisplayModes(did, NULL);
+	if (!allModes) return -1;
+
+	CGDisplayModeRef best = NULL;
+	for (CFIndex i = 0; i < CFArrayGetCount(allModes); i++) {
+		CGDisplayModeRef mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(allModes, i);
+		int mw = (int)CGDisplayModeGetWidth(mode);
+		int mh = (int)CGDisplayModeGetHeight(mode);
+		double mhz = CGDisplayModeGetRefreshRate(mode);
+		if (mw == w && mh == h) {
+			if (hz <= 0 || (int)mhz == (int)hz) {
+				best = mode;
+				break;
+			}
+		}
+	}
+
+	int result = -1;
+	if (best) {
+		CGDisplayConfigRef config;
+		if (CGBeginDisplayConfiguration(&config) == kCGErrorSuccess) {
+			CGConfigureDisplayWithDisplayMode(config, did, best, NULL);
+			if (CGCompleteDisplayConfiguration(config, kCGConfigureForSession) == kCGErrorSuccess) {
+				result = 0;
+			}
+		}
+	}
+	CFRelease(allModes);
+	return result;
 }
 
-static void screenInfo(int idx, int *w, int *h, double *hz) {
-	NSArray *screens = [NSScreen screens];
-	if (idx < 0 || idx >= (int)[screens count]) return;
-	NSScreen *screen = [screens objectAtIndex:idx];
-	NSRect frame = [screen frame];
-	*w = (int)frame.size.width;
-	*h = (int)frame.size.height;
-	// Refresh rate from display mode.
-	CGDirectDisplayID displayID = [[[screen deviceDescription]
-		objectForKey:@"NSScreenNumber"] unsignedIntValue];
-	CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displayID);
-	if (mode) {
-		*hz = CGDisplayModeGetRefreshRate(mode);
-		CGDisplayModeRelease(mode);
+static void metalSetEDR(void *layerPtr, int enable) {
+	CAMetalLayer *layer = (CAMetalLayer *)layerPtr;
+	layer.wantsExtendedDynamicRangeContent = enable ? YES : NO;
+	if (enable) {
+		layer.colorspace = CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearDisplayP3);
+	} else {
+		layer.colorspace = CGColorSpaceCreateDeviceRGB();
 	}
 }
 */
@@ -140,36 +194,34 @@ import (
 	"unsafe"
 )
 
-// DarwinOutput renders patterns via a fullscreen NSWindow on macOS.
+// DarwinOutput renders patterns via Metal on a captured display.
 type DarwinOutput struct {
-	pw     C.PatternWindow
-	buf    []byte
-	width  int
-	height int
-	stride int
-	modes  []Mode
-	idx    int // screen index
+	mo       C.MetalOutput
+	buf      []byte
+	width    int
+	height   int
+	stride   int
+	bitDepth int
+	modes    []Mode
+	idx      int
 }
 
 func NewCGOutput() Output { return &DarwinOutput{idx: -1} }
 
 func (d *DarwinOutput) Open(connector string) error {
-	// Find the screen. On macOS, connector names aren't as standardized;
-	// accept index ("1", "2") or match by resolution.
 	count := int(C.screenCount())
 	d.idx = -1
 
-	// Try parsing as index (0-based or 1-based).
+	// Parse connector as screen index.
 	var targetIdx int
 	if _, err := fmt.Sscanf(connector, "%d", &targetIdx); err == nil {
 		if targetIdx >= 0 && targetIdx < count {
 			d.idx = targetIdx
 		} else if targetIdx > 0 && targetIdx <= count {
-			d.idx = targetIdx - 1 // 1-based
+			d.idx = targetIdx - 1
 		}
 	}
-
-	// Fallback: use the last non-primary screen (index > 0).
+	// Fallback: last non-primary screen.
 	if d.idx < 0 {
 		for i := count - 1; i > 0; i-- {
 			d.idx = i
@@ -186,24 +238,22 @@ func (d *DarwinOutput) Open(connector string) error {
 
 	// Enumerate modes.
 	d.modes = nil
-	for i := 0; i < count; i++ {
-		var w, h C.int
-		var hz C.double
-		C.screenInfo(C.int(i), &w, &h, &hz)
-		if i == d.idx {
-			d.modes = append(d.modes, Mode{
-				Width: int(w), Height: int(h), RefreshHz: float64(hz),
-			})
-		}
-	}
+	var w, h C.int
+	var hz C.double
+	C.screenInfo(C.int(d.idx), &w, &h, &hz)
+	d.modes = append(d.modes,
+		Mode{Width: int(w), Height: int(h), RefreshHz: float64(hz), BitDepth: 8},
+		Mode{Width: int(w), Height: int(h), RefreshHz: float64(hz), BitDepth: 10},
+	)
 
-	// Create the fullscreen window.
-	d.pw = C.createPatternWindow(C.int(d.idx))
-	if d.pw.window == nil {
-		return fmt.Errorf("failed to create pattern window on screen %d", d.idx)
+	// Open Metal output with display capture.
+	d.mo = C.metalOpen(C.int(d.idx), 0)
+	if d.mo.window == nil {
+		return fmt.Errorf("failed to open Metal output on screen %d", d.idx)
 	}
-	d.width = int(d.pw.width)
-	d.height = int(d.pw.height)
+	d.width = int(d.mo.width)
+	d.height = int(d.mo.height)
+	d.bitDepth = 8
 	d.stride = d.width * 4
 	d.buf = make([]byte, d.stride*d.height)
 
@@ -213,38 +263,62 @@ func (d *DarwinOutput) Open(connector string) error {
 func (d *DarwinOutput) Modes() []Mode { return d.modes }
 
 func (d *DarwinOutput) SetMode(m Mode) error {
-	if m.Width == d.width && m.Height == d.height {
-		return nil
+	if m.Width != d.width || m.Height != d.height {
+		rc := C.metalSetMode(d.mo.displayID, C.int(m.Width), C.int(m.Height), C.double(m.RefreshHz))
+		if rc != 0 {
+			return fmt.Errorf("mode %dx%d@%.0f not available", m.Width, m.Height, m.RefreshHz)
+		}
+		d.width = m.Width
+		d.height = m.Height
+		d.stride = d.width * 4
+		d.buf = make([]byte, d.stride*d.height)
 	}
-	return fmt.Errorf("mode change to %dx%d not yet supported — set display resolution in System Settings first", m.Width, m.Height)
+	d.bitDepth = m.BitDepth
+	if d.bitDepth <= 0 {
+		d.bitDepth = 8
+	}
+	return nil
 }
 
 func (d *DarwinOutput) Render(p pattern.Pattern) error {
 	if d.buf == nil {
-		return fmt.Errorf("no buffer — call Open first")
+		return fmt.Errorf("not open")
 	}
 
-	// DrawRGBA writes BGRX, but NSBitmapImageRep expects RGBA.
-	// Draw into buffer then swizzle.
-	DrawRGBA(d.buf, d.width, d.height, d.stride, p)
-
-	// Swizzle BGRX → RGBA in-place.
-	for i := 0; i < len(d.buf); i += 4 {
-		d.buf[i], d.buf[i+2] = d.buf[i+2], d.buf[i] // swap B↔R
+	if d.bitDepth == 10 {
+		DrawRGBA10(d.buf, d.width, d.height, d.stride, p)
+	} else {
+		DrawRGBA(d.buf, d.width, d.height, d.stride, p)
+		// Swizzle BGRX → BGRA (Metal BGRA8Unorm expects B,G,R,A).
+		// DrawRGBA already writes B,G,R,0xFF — compatible with BGRA8.
 	}
 
-	C.updatePatternView(d.pw.view,
+	rc := C.metalRender(&d.mo,
 		(*C.uchar)(unsafe.Pointer(&d.buf[0])),
 		C.int(d.width), C.int(d.height), C.int(d.stride))
+	if rc != 0 {
+		return fmt.Errorf("Metal render failed")
+	}
+	return nil
+}
 
+func (d *DarwinOutput) SetHDRMetadata(meta *HDRMetadata) error {
+	if d.mo.metalLayer == nil {
+		return fmt.Errorf("not open")
+	}
+	if meta != nil {
+		C.metalSetEDR(d.mo.metalLayer, 1)
+	} else {
+		C.metalSetEDR(d.mo.metalLayer, 0)
+	}
+	// macOS doesn't expose HDMI InfoFrame metadata directly —
+	// EDR + colorspace is how it signals HDR to the display.
 	return nil
 }
 
 func (d *DarwinOutput) Close() error {
-	if d.pw.window != nil {
-		C.destroyPatternWindow(d.pw.window, d.pw.view)
-		d.pw.window = nil
-		d.pw.view = nil
+	if d.mo.window != nil {
+		C.metalClose(&d.mo)
 	}
 	d.buf = nil
 	return nil

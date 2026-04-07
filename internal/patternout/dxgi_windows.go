@@ -5,192 +5,73 @@ package patternout
 import (
 	"autocal50/internal/pattern"
 	"fmt"
-	"sync"
 	"syscall"
 	"unsafe"
 )
 
-var (
-	user32w   = syscall.NewLazyDLL("user32.dll")
-	gdi32w    = syscall.NewLazyDLL("gdi32.dll")
-	kernel32w = syscall.NewLazyDLL("kernel32.dll")
-
-	procRegisterClassEx     = user32w.NewProc("RegisterClassExW")
-	procCreateWindowEx      = user32w.NewProc("CreateWindowExW")
-	procDestroyWindow       = user32w.NewProc("DestroyWindow")
-	procShowWindow          = user32w.NewProc("ShowWindow")
-	procSetForegroundWindow = user32w.NewProc("SetForegroundWindow")
-	procGetDC               = user32w.NewProc("GetDC")
-	procReleaseDC           = user32w.NewProc("ReleaseDC")
-	procDefWindowProc       = user32w.NewProc("DefWindowProcW")
-	procPeekMessage         = user32w.NewProc("PeekMessageW")
-	procDispatchMessage     = user32w.NewProc("DispatchMessageW")
-	procEnumDisplayDevices  = user32w.NewProc("EnumDisplayDevicesW")
-	procEnumDisplaySettings = user32w.NewProc("EnumDisplaySettingsW")
-	procShowCursor          = user32w.NewProc("ShowCursor")
-
-	procCreateDIBSection    = gdi32w.NewProc("CreateDIBSection")
-	procCreateCompatibleDC  = gdi32w.NewProc("CreateCompatibleDC")
-	procSelectObject        = gdi32w.NewProc("SelectObject")
-	procBitBlt              = gdi32w.NewProc("BitBlt")
-	procDeleteDC            = gdi32w.NewProc("DeleteDC")
-	procDeleteObject        = gdi32w.NewProc("DeleteObject")
-
-	procGetModuleHandle = kernel32w.NewProc("GetModuleHandleW")
-)
-
-// Win32 constants.
-const (
-	wsPopup       = 0x80000000
-	wsVisible     = 0x10000000
-	wsExTopmost   = 0x00000008
-	wsExToolWindow = 0x00000080
-	swShow        = 5
-	srccopy       = 0x00CC0020
-	biRGB         = 0
-	dibRGBColors  = 0
-	pmRemove      = 1
-)
-
-type bitmapInfoHeader struct {
-	biSize          uint32
-	biWidth         int32
-	biHeight        int32
-	biPlanes        uint16
-	biBitCount      uint16
-	biCompression   uint32
-	biSizeImage     uint32
-	biXPelsPerMeter int32
-	biYPelsPerMeter int32
-	biClrUsed       uint32
-	biClrImportant  uint32
-}
-
-type bitmapInfo struct {
-	bmiHeader bitmapInfoHeader
-}
-
-type wndClassEx struct {
-	cbSize        uint32
-	style         uint32
-	lpfnWndProc   uintptr
-	cbClsExtra    int32
-	cbWndExtra    int32
-	hInstance     uintptr
-	hIcon         uintptr
-	hCursor       uintptr
-	hbrBackground uintptr
-	lpszMenuName  uintptr
-	lpszClassName uintptr
-	hIconSm       uintptr
-}
-
-type point struct{ x, y int32 }
-type msg struct {
-	hwnd    uintptr
-	message uint32
-	wParam  uintptr
-	lParam  uintptr
-	time    uint32
-	pt      point
-}
-
-// WindowsOutput renders patterns via a fullscreen Win32 popup window + GDI DIB.
+// WindowsOutput renders patterns via DXGI exclusive fullscreen swap chain.
 type WindowsOutput struct {
 	hwnd      uintptr
-	hdc       uintptr
-	memDC     uintptr
-	hBitmap   uintptr
-	pixels    unsafe.Pointer
+	factory   *comObj
+	adapter   *comObj
+	device    *comObj
+	devCtx    *comObj
+	swapChain *comObj
+	output    *comObj
 	width     int
 	height    int
 	stride    int
+	bitDepth  int
+	format    uint32
 	modes     []Mode
 	connector string
-	mu        sync.Mutex
 }
-
-var classRegistered bool
 
 func NewDXGIOutput() Output { return &WindowsOutput{} }
 
 func (w *WindowsOutput) Open(connector string) error {
 	w.connector = connector
 
-	// Enumerate modes for this display.
-	w.modes = enumModes(connector)
+	// Create DXGI Factory2.
+	var factory *comObj
+	hr, _, _ := procCreateDXGIFactory2.Call(0, uintptr(unsafe.Pointer(&iidIDXGIFactory2)), uintptr(unsafe.Pointer(&factory)))
+	if int32(hr) < 0 {
+		return fmt.Errorf("CreateDXGIFactory2 failed: %#x", hr)
+	}
+	w.factory = factory
 
-	// Find monitor position.
-	x, y, width, height, err := getMonitorRect(connector)
-	if err != nil {
+	// Find the target output by enumerating adapters → outputs.
+	if err := w.findOutput(connector); err != nil {
+		w.Close()
 		return err
 	}
 
-	// Register window class once.
-	if !classRegistered {
-		if err := registerClass(); err != nil {
-			return err
-		}
-		classRegistered = true
-	}
-
-	// Create fullscreen popup window on the target monitor.
-	className, _ := syscall.UTF16PtrFromString("AutoCal50Pattern")
-	title, _ := syscall.UTF16PtrFromString("")
-
-	hwnd, _, _ := procCreateWindowEx.Call(
-		uintptr(wsExTopmost|wsExToolWindow),
-		uintptr(unsafe.Pointer(className)),
-		uintptr(unsafe.Pointer(title)),
-		uintptr(wsPopup|wsVisible),
-		uintptr(x), uintptr(y), uintptr(width), uintptr(height),
-		0, 0, getHInstance(), 0,
+	// Create D3D11 device.
+	var device, devCtx uintptr
+	hr, _, _ = procD3D11CreateDevice.Call(
+		uintptr(unsafe.Pointer(w.adapter)), // pAdapter
+		0,                                   // DriverType (0 = unknown, adapter provided)
+		0,                                   // Software
+		0,                                   // Flags
+		0,                                   // pFeatureLevels
+		0,                                   // FeatureLevels count
+		7,                                   // SDK version
+		uintptr(unsafe.Pointer(&device)),
+		0, // pFeatureLevel out
+		uintptr(unsafe.Pointer(&devCtx)),
 	)
-	if hwnd == 0 {
-		return fmt.Errorf("CreateWindowEx failed")
+	if int32(hr) < 0 {
+		w.Close()
+		return fmt.Errorf("D3D11CreateDevice failed: %#x", hr)
 	}
-	w.hwnd = hwnd
-	w.width = width
-	w.height = height
+	w.device = (*comObj)(unsafe.Pointer(device))
+	w.devCtx = (*comObj)(unsafe.Pointer(devCtx))
 
-	procShowWindow.Call(hwnd, swShow)
-	procSetForegroundWindow.Call(hwnd)
-	procShowCursor.Call(0) // hide cursor
-
-	// Create DIB section for pixel buffer.
-	hdc, _, _ := procGetDC.Call(hwnd)
-	w.hdc = hdc
-
-	memDC, _, _ := procCreateCompatibleDC.Call(hdc)
-	w.memDC = memDC
-
-	bi := bitmapInfo{
-		bmiHeader: bitmapInfoHeader{
-			biSize:        uint32(unsafe.Sizeof(bitmapInfoHeader{})),
-			biWidth:       int32(width),
-			biHeight:      -int32(height), // top-down DIB
-			biPlanes:      1,
-			biBitCount:    32,
-			biCompression: biRGB,
-		},
+	// Create a minimal hidden window for the swap chain.
+	if err := w.createWindow(); err != nil {
+		w.Close()
+		return err
 	}
-
-	var bits unsafe.Pointer
-	hBitmap, _, _ := procCreateDIBSection.Call(
-		memDC,
-		uintptr(unsafe.Pointer(&bi)),
-		dibRGBColors,
-		uintptr(unsafe.Pointer(&bits)),
-		0, 0,
-	)
-	if hBitmap == 0 {
-		return fmt.Errorf("CreateDIBSection failed")
-	}
-	w.hBitmap = hBitmap
-	w.pixels = bits
-	w.stride = width * 4
-
-	procSelectObject.Call(memDC, hBitmap)
 
 	return nil
 }
@@ -198,153 +79,308 @@ func (w *WindowsOutput) Open(connector string) error {
 func (w *WindowsOutput) Modes() []Mode { return w.modes }
 
 func (w *WindowsOutput) SetMode(m Mode) error {
-	// On Windows, mode changes require ChangeDisplaySettingsEx.
-	// For now, we just validate the mode exists and recreate the buffer if size changed.
-	if m.Width == w.width && m.Height == w.height {
-		return nil
-	}
-	// Would need to destroy and recreate window + DIB at new size.
-	// For initial implementation, require the mode to match current display settings.
-	return fmt.Errorf("mode change to %dx%d not yet supported — set display resolution in Windows Settings first", m.Width, m.Height)
-}
-
-func (w *WindowsOutput) Render(p pattern.Pattern) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	if w.pixels == nil {
-		return fmt.Errorf("no pixel buffer — call Open first")
+	w.width = m.Width
+	w.height = m.Height
+	w.bitDepth = m.BitDepth
+	if w.bitDepth <= 0 {
+		w.bitDepth = 8
 	}
 
-	// Build a Go slice over the DIB pixel memory.
-	bufSize := w.stride * w.height
-	buf := unsafe.Slice((*byte)(w.pixels), bufSize)
+	// Pick DXGI format based on bit depth.
+	switch w.bitDepth {
+	case 10:
+		w.format = dxgiFormatR10G10B10A2Unorm
+	default:
+		w.format = dxgiFormatB8G8R8A8Unorm
+	}
 
-	// Draw pattern into the DIB. DIB pixel format is BGRX (same as DRM XRGB8888).
-	DrawRGBA(buf, w.width, w.height, w.stride, p)
+	// Release old swap chain if resizing.
+	if w.swapChain != nil {
+		w.swapChain.call(vIDXGISwapChain_SetFullscreenState, 0, 0)
+		w.swapChain.release()
+		w.swapChain = nil
+	}
 
-	// BitBlt from memory DC to window DC.
-	procBitBlt.Call(
-		w.hdc, 0, 0, uintptr(w.width), uintptr(w.height),
-		w.memDC, 0, 0, srccopy,
+	// Create swap chain.
+	desc := dxgiSwapChainDesc1{
+		Width:       uint32(w.width),
+		Height:      uint32(w.height),
+		Format:      w.format,
+		SampleCount: 1,
+		BufferUsage: dxgiUsageRenderTargetOutput,
+		BufferCount: 2,
+		SwapEffect:  dxgiSwapEffectFlipDiscard,
+	}
+
+	var sc *comObj
+	_, err := w.factory.call(vIDXGIFactory2_CreateSwapChainForHwnd,
+		uintptr(unsafe.Pointer(w.device)),
+		w.hwnd,
+		uintptr(unsafe.Pointer(&desc)),
+		0, // pFullscreenDesc (nil = windowed initially)
+		0, // pRestrictToOutput
+		uintptr(unsafe.Pointer(&sc)),
 	)
+	if err != nil {
+		return fmt.Errorf("CreateSwapChainForHwnd: %w", err)
+	}
+	w.swapChain = sc
+	w.stride = w.width * 4
 
-	// Pump messages to keep the window responsive.
-	pumpMessages()
+	// Go exclusive fullscreen on the target output.
+	_, err = w.swapChain.call(vIDXGISwapChain_SetFullscreenState, 1, uintptr(unsafe.Pointer(w.output)))
+	if err != nil {
+		// Non-fatal — some drivers don't support exclusive, fall back to borderless.
+	}
+
+	// Resize buffers to match mode.
+	w.swapChain.call(vIDXGISwapChain_ResizeBuffers, 0,
+		uintptr(w.width), uintptr(w.height), uintptr(w.format), 0)
+
+	// Set target mode (resolution + refresh).
+	target := dxgiModeDesc{
+		Width:      uint32(w.width),
+		Height:     uint32(w.height),
+		RefreshNum: uint32(m.RefreshHz * 1000),
+		RefreshDen: 1000,
+		Format:     w.format,
+	}
+	w.swapChain.call(vIDXGISwapChain_ResizeTarget, uintptr(unsafe.Pointer(&target)))
 
 	return nil
 }
 
+func (w *WindowsOutput) Render(p pattern.Pattern) error {
+	if w.swapChain == nil {
+		return fmt.Errorf("no swap chain — call SetMode first")
+	}
+
+	// Get back buffer.
+	var backBuf *comObj
+	_, err := w.swapChain.call(vIDXGISwapChain_GetBuffer, 0,
+		uintptr(unsafe.Pointer(&iidID3D11Texture2D)),
+		uintptr(unsafe.Pointer(&backBuf)))
+	if err != nil {
+		return fmt.Errorf("GetBuffer: %w", err)
+	}
+	defer backBuf.release()
+
+	// Map the back buffer for CPU write.
+	var mapped d3d11MappedSubresource
+	_, err = w.devCtx.call(vID3D11DeviceContext_Map,
+		uintptr(unsafe.Pointer(backBuf)),
+		0,                                          // subresource
+		4,                                          // D3D11_MAP_WRITE_DISCARD
+		0,                                          // flags
+		uintptr(unsafe.Pointer(&mapped)),
+	)
+	if err != nil {
+		return fmt.Errorf("Map: %w", err)
+	}
+
+	// Write pixels.
+	bufSize := int(mapped.RowPitch) * w.height
+	buf := unsafe.Slice((*byte)(unsafe.Pointer(mapped.pData)), bufSize)
+
+	if w.bitDepth == 10 {
+		DrawRGBA10(buf, w.width, w.height, int(mapped.RowPitch), p)
+	} else {
+		DrawRGBA(buf, w.width, w.height, int(mapped.RowPitch), p)
+	}
+
+	// Unmap.
+	w.devCtx.call(vID3D11DeviceContext_Unmap, uintptr(unsafe.Pointer(backBuf)), 0)
+
+	// Present.
+	w.swapChain.call(vIDXGISwapChain_Present, 1, 0) // vsync
+
+	return nil
+}
+
+func (w *WindowsOutput) SetHDRMetadata(meta *HDRMetadata) error {
+	if w.swapChain == nil {
+		return fmt.Errorf("no swap chain")
+	}
+
+	// Query IDXGISwapChain3 for SetColorSpace1.
+	var sc3 *comObj
+	if err := w.swapChain.queryInterface(&iidIDXGISwapChain3, &sc3); err == nil {
+		defer sc3.release()
+		if meta != nil {
+			sc3.call(vIDXGISwapChain3_SetColorSpace1, uintptr(dxgiColorSpaceRGBFullG2084NoneP2020))
+		} else {
+			sc3.call(vIDXGISwapChain3_SetColorSpace1, uintptr(dxgiColorSpaceRGBFullG22NoneP709))
+		}
+	}
+
+	// Query IDXGISwapChain4 for SetHDRMetaData.
+	var sc4 *comObj
+	if err := w.swapChain.queryInterface(&iidIDXGISwapChain4, &sc4); err != nil {
+		return fmt.Errorf("IDXGISwapChain4 not available: %w", err)
+	}
+	defer sc4.release()
+
+	if meta == nil {
+		sc4.call(vIDXGISwapChain4_SetHDRMetaData, 0, 0, 0) // clear
+		return nil
+	}
+
+	hdr := dxgiHDR10Metadata{
+		RedPrimaryX:           meta.Rx,
+		RedPrimaryY:           meta.Ry,
+		GreenPrimaryX:         meta.Gx,
+		GreenPrimaryY:         meta.Gy,
+		BluePrimaryX:          meta.Bx,
+		BluePrimaryY:          meta.By,
+		WhitePointX:           meta.Wx,
+		WhitePointY:           meta.Wy,
+		MaxMasteringLuminance: meta.MaxLuminance,
+		MinMasteringLuminance: meta.MinLuminance,
+		MaxContentLightLevel:  meta.MaxCLL,
+		MaxFrameAvgLightLevel: meta.MaxFALL,
+	}
+	_, err := sc4.call(vIDXGISwapChain4_SetHDRMetaData,
+		uintptr(dxgiHDRMetadataTypeHDR10),
+		unsafe.Sizeof(hdr),
+		uintptr(unsafe.Pointer(&hdr)),
+	)
+	return err
+}
+
 func (w *WindowsOutput) Close() error {
-	procShowCursor.Call(1) // restore cursor
-	if w.hBitmap != 0 {
-		procDeleteObject.Call(w.hBitmap)
-		w.hBitmap = 0
+	if w.swapChain != nil {
+		w.swapChain.call(vIDXGISwapChain_SetFullscreenState, 0, 0)
+		w.swapChain.release()
+		w.swapChain = nil
 	}
-	if w.memDC != 0 {
-		procDeleteDC.Call(w.memDC)
-		w.memDC = 0
+	if w.devCtx != nil {
+		w.devCtx.release()
+		w.devCtx = nil
 	}
-	if w.hdc != 0 {
-		procReleaseDC.Call(w.hwnd, w.hdc)
-		w.hdc = 0
+	if w.device != nil {
+		w.device.release()
+		w.device = nil
+	}
+	if w.output != nil {
+		w.output.release()
+		w.output = nil
+	}
+	if w.adapter != nil {
+		w.adapter.release()
+		w.adapter = nil
+	}
+	if w.factory != nil {
+		w.factory.release()
+		w.factory = nil
 	}
 	if w.hwnd != 0 {
 		procDestroyWindow.Call(w.hwnd)
 		w.hwnd = 0
 	}
-	w.pixels = nil
+	procShowCursor.Call(1)
 	return nil
 }
 
-// --- helpers ---
+// --- internal helpers ---
 
-func registerClass() error {
-	className, _ := syscall.UTF16PtrFromString("AutoCal50Pattern")
-	wc := wndClassEx{
-		cbSize:        uint32(unsafe.Sizeof(wndClassEx{})),
-		lpfnWndProc:   procDefWindowProc.Addr(),
-		hInstance:     getHInstance(),
-		lpszClassName: uintptr(unsafe.Pointer(className)),
-	}
-	r, _, _ := procRegisterClassEx.Call(uintptr(unsafe.Pointer(&wc)))
-	if r == 0 {
-		return fmt.Errorf("RegisterClassEx failed")
-	}
-	return nil
-}
-
-func getHInstance() uintptr {
-	h, _, _ := procGetModuleHandle.Call(0)
-	return h
-}
-
-func pumpMessages() {
-	var m msg
-	for {
-		r, _, _ := procPeekMessage.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0, pmRemove)
-		if r == 0 {
+func (w *WindowsOutput) findOutput(connector string) error {
+	for ai := uint32(0); ; ai++ {
+		var adapter *comObj
+		_, err := w.factory.call(vIDXGIFactory2_EnumAdapters, uintptr(ai), uintptr(unsafe.Pointer(&adapter)))
+		if err != nil {
 			break
 		}
-		procDispatchMessage.Call(uintptr(unsafe.Pointer(&m)))
+
+		for oi := uint32(0); ; oi++ {
+			var output *comObj
+			_, err := adapter.call(vIDXGIAdapter_EnumOutputs, uintptr(oi), uintptr(unsafe.Pointer(&output)))
+			if err != nil {
+				break
+			}
+
+			var desc dxgiOutputDesc
+			output.call(vIDXGIOutput_GetDesc, uintptr(unsafe.Pointer(&desc)))
+			name := syscall.UTF16ToString(desc.DeviceName[:])
+
+			// Collect modes.
+			mw := int(desc.DesktopCoords[2] - desc.DesktopCoords[0])
+			mh := int(desc.DesktopCoords[3] - desc.DesktopCoords[1])
+
+			if name == connector || connector == "" {
+				w.adapter = adapter
+				w.output = output
+				w.modes = append(w.modes, Mode{Width: mw, Height: mh, RefreshHz: 60})
+				// Also add common modes.
+				if mw >= 3840 {
+					w.modes = append(w.modes,
+						Mode{Width: 3840, Height: 2160, RefreshHz: 60, BitDepth: 10},
+						Mode{Width: 3840, Height: 2160, RefreshHz: 24, BitDepth: 10},
+					)
+				}
+				return nil
+			}
+			output.release()
+		}
+		adapter.release()
 	}
+	return fmt.Errorf("output %q not found", connector)
 }
 
-// getMonitorRect finds the position and size of the named display device.
-func getMonitorRect(name string) (x, y, w, h int, err error) {
-	devName, _ := syscall.UTF16PtrFromString(name)
-	var dm [256]byte
-	*(*uint16)(unsafe.Pointer(&dm[36])) = 256 // dmSize
-	r, _, _ := procEnumDisplaySettings.Call(
-		uintptr(unsafe.Pointer(devName)),
-		uintptr(0xFFFFFFFF), // ENUM_CURRENT_SETTINGS
-		uintptr(unsafe.Pointer(&dm[0])),
+var (
+	procRegisterClassExW = user32w.NewProc("RegisterClassExW")
+	procCreateWindowExW  = user32w.NewProc("CreateWindowExW")
+	procDestroyWindow    = user32w.NewProc("DestroyWindow")
+	procShowCursor       = user32w.NewProc("ShowCursor")
+	procDefWindowProcW   = user32w.NewProc("DefWindowProcW")
+
+	user32w   = syscall.NewLazyDLL("user32.dll")
+	kernel32w = syscall.NewLazyDLL("kernel32.dll")
+	procGetModuleHandleW = kernel32w.NewProc("GetModuleHandleW")
+)
+
+var dxgiClassRegistered bool
+
+func (w *WindowsOutput) createWindow() error {
+	if !dxgiClassRegistered {
+		className, _ := syscall.UTF16PtrFromString("AutoCal50DXGI")
+		wc := struct {
+			cbSize        uint32
+			style         uint32
+			lpfnWndProc   uintptr
+			cbClsExtra    int32
+			cbWndExtra    int32
+			hInstance     uintptr
+			hIcon         uintptr
+			hCursor       uintptr
+			hbrBackground uintptr
+			lpszMenuName  uintptr
+			lpszClassName uintptr
+			hIconSm       uintptr
+		}{
+			lpfnWndProc:   procDefWindowProcW.Addr(),
+			lpszClassName: uintptr(unsafe.Pointer(className)),
+		}
+		wc.cbSize = uint32(unsafe.Sizeof(wc))
+		h, _, _ := procGetModuleHandleW.Call(0)
+		wc.hInstance = h
+		procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc)))
+		dxgiClassRegistered = true
+	}
+
+	className, _ := syscall.UTF16PtrFromString("AutoCal50DXGI")
+	title, _ := syscall.UTF16PtrFromString("")
+	hwnd, _, _ := procCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(className)),
+		uintptr(unsafe.Pointer(title)),
+		0x80000000|0x10000000, // WS_POPUP | WS_VISIBLE
+		0, 0, uintptr(w.width), uintptr(w.height),
+		0, 0, 0, 0,
 	)
-	if r == 0 {
-		return 0, 0, 0, 0, fmt.Errorf("EnumDisplaySettings failed for %s", name)
+	if hwnd == 0 {
+		return fmt.Errorf("CreateWindowEx failed")
 	}
-	x = int(*(*int32)(unsafe.Pointer(&dm[44])))   // dmPosition.x
-	y = int(*(*int32)(unsafe.Pointer(&dm[48])))   // dmPosition.y
-	w = int(*(*uint32)(unsafe.Pointer(&dm[108])))  // dmPelsWidth
-	h = int(*(*uint32)(unsafe.Pointer(&dm[112])))  // dmPelsHeight
-	return
-}
-
-type winDisplayDevice struct {
-	cb           uint32
-	deviceName   [32]uint16
-	deviceString [128]uint16
-	stateFlags   uint32
-	deviceID     [128]uint16
-	deviceKey    [128]uint16
-}
-
-// enumModes lists available display modes for a device.
-func enumModes(name string) []Mode {
-	devName, _ := syscall.UTF16PtrFromString(name)
-	seen := make(map[[3]int]bool)
-	var modes []Mode
-
-	for i := uint32(0); ; i++ {
-		var dm [256]byte
-		*(*uint16)(unsafe.Pointer(&dm[36])) = 256
-		r, _, _ := procEnumDisplaySettings.Call(
-			uintptr(unsafe.Pointer(devName)),
-			uintptr(i),
-			uintptr(unsafe.Pointer(&dm[0])),
-		)
-		if r == 0 {
-			break
-		}
-		w := int(*(*uint32)(unsafe.Pointer(&dm[108])))
-		h := int(*(*uint32)(unsafe.Pointer(&dm[112])))
-		hz := int(*(*uint32)(unsafe.Pointer(&dm[120])))
-		key := [3]int{w, h, hz}
-		if seen[key] || w == 0 {
-			continue
-		}
-		seen[key] = true
-		modes = append(modes, Mode{Width: w, Height: h, RefreshHz: float64(hz)})
-	}
-	return modes
+	w.hwnd = hwnd
+	procShowCursor.Call(0)
+	return nil
 }
