@@ -1,5 +1,6 @@
 package events
 
 const (
-	MeasurementUpdate = "measurement:update"
+	MeasurementUpdate     = "measurement:update"
+	CalibrationProgress   = "calibration:progress"
 )

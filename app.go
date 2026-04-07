@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -297,4 +298,105 @@ func (a *App) SnapshotControls(label string) error {
 	}
 	a.mu.Unlock()
 	return nil
+}
+
+// Automated Calibration
+
+func (a *App) buildEngine() *calibration.Engine {
+	return &calibration.Engine{
+		ShowPattern: func(patternID string) error {
+			// Find pattern by ID from battery.
+			for _, p := range pattern.Battery() {
+				if p.ID == patternID {
+					a.SetActivePattern(p)
+					return nil
+				}
+			}
+			return fmt.Errorf("pattern %s not found", patternID)
+		},
+		Measure: func(ctx context.Context) (meter.Reading, error) {
+			return a.core.Measure(ctx)
+		},
+		GetControl: func(ctx context.Context, id string) (float64, error) {
+			v, err := a.core.GetProjectorControl(ctx, id)
+			if err != nil {
+				return 0, err
+			}
+			switch val := v.(type) {
+			case float64:
+				return val, nil
+			case int:
+				return float64(val), nil
+			case json.Number:
+				return val.Float64()
+			default:
+				return 0, fmt.Errorf("control %s is not numeric", id)
+			}
+		},
+		SetControl: func(ctx context.Context, id string, value float64) error {
+			return a.core.SetProjectorControl(ctx, id, value)
+		},
+		OnProgress: func(ev calibration.ProgressEvent) {
+			wailsRuntime.EventsEmit(a.ctx, events.CalibrationProgress, ev)
+		},
+	}
+}
+
+func (a *App) RunPreCal() (*calibration.PreCalResult, error) {
+	eng := a.buildEngine()
+	result, err := eng.RunPreCal(a.ctx)
+	if err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	if a.activeSession != nil {
+		a.activeSession.PreCal = &store.PreCalData{
+			BlackLevel:    result.BlackLevel,
+			PeakLuminance: result.PeakLum,
+			ContrastRatio: result.ContrastRat,
+			ClipBlack:     result.ClipBlack,
+			ClipWhite:     result.ClipWhite,
+		}
+	}
+	a.mu.Unlock()
+	_ = a.SaveSession()
+	return result, nil
+}
+
+func (a *App) RunWhiteBalance(standard string, tolerance float64) error {
+	std, ok := calibration.Standards[standard]
+	if !ok {
+		return fmt.Errorf("unknown standard: %s", standard)
+	}
+	_ = a.SnapshotControls("before whitebalance")
+	eng := a.buildEngine()
+	err := eng.RunWhiteBalance(a.ctx, std, tolerance)
+	_ = a.SnapshotControls("after whitebalance")
+	_ = a.SaveSession()
+	return err
+}
+
+func (a *App) RunGammaSweep(standard string) ([]calibration.GammaPoint, error) {
+	std, ok := calibration.Standards[standard]
+	if !ok {
+		return nil, fmt.Errorf("unknown standard: %s", standard)
+	}
+	eng := a.buildEngine()
+	pts, err := eng.RunGammaSweep(a.ctx, std, 20)
+	_ = a.SaveSession()
+	return pts, err
+}
+
+func (a *App) RunVerification(standard string) (map[string]float64, error) {
+	std, ok := calibration.Standards[standard]
+	if !ok {
+		return nil, fmt.Errorf("unknown standard: %s", standard)
+	}
+	eng := a.buildEngine()
+	avg, max, err := eng.RunVerification(a.ctx, std)
+	if err != nil {
+		return nil, err
+	}
+	_ = a.SaveSession()
+	return map[string]float64{"avgDeltaE": avg, "maxDeltaE": max}, nil
 }
