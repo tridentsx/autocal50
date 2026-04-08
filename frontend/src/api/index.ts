@@ -59,4 +59,30 @@ export const api = {
   getCalibrationSteps: (standard: string) => call<any[]>("GetCalibrationSteps", standard),
   evaluateMeasurement: (target: any, tolerance: number) => call<any>("EvaluateMeasurement", target, tolerance),
   getCalibrationStandards: () => call<Record<string, any>>("GetCalibrationStandards"),
+
+  // Sessions
+  startSession: (standard: string) => call<any>("StartSession", standard),
+  getActiveSession: () => call<any>("GetActiveSession"),
+  saveSession: () => call<void>("SaveSession"),
+  listSessions: () => call<any[]>("ListSessions"),
+  loadSession: (id: string) => call<any>("LoadSession", id),
+  deleteSession: (id: string) => call<void>("DeleteSession", id),
+  recordMeasurement: (step: string, target: any, tolerance: number) => call<any>("RecordMeasurement", step, target, tolerance),
+  exportSessionCSV: (sessionID: string, path: string) => call<void>("ExportSessionCSV", sessionID, path),
+  getSessionChartData: (sessionID?: string) => call<any>("GetSessionChartData", sessionID || ""),
+
+  // Calibration engine
+  runPreCal: () => call<any>("RunPreCal"),
+  runWhiteBalance: (standard: string, tolerance: number) => call<void>("RunWhiteBalance", standard, tolerance),
+  runGammaSweep: (standard: string) => call<any[]>("RunGammaSweep", standard),
+  runVerification: (standard: string) => call<Record<string, number>>("RunVerification", standard),
+  generateICCProfile: (standard: string) => call<any>("GenerateICCProfile", standard),
+  installICCProfile: () => call<any>("InstallICCProfile"),
+
+  // Meter
+  darkCalMeter: () => call<void>("DarkCalMeter"),
+
+  // Settings
+  getSettings: () => call<any>("GetSettings"),
+  saveSettings: (s: any) => call<void>("SaveSettings", s),
 };

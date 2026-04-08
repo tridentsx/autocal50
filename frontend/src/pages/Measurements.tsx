@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import ReactECharts from "echarts-for-react";
+import { api } from "@/api";
 
 // --- ST.2084 PQ EOTF ---
 function pqEOTF(v: number): number {
@@ -165,10 +166,52 @@ const ax = { axisLine: { lineStyle: { color: "#2a2d3a" } }, axisLabel: { color: 
 export default function Measurements() {
   const { view } = useParams<{ view: string }>();
   const [stdKey, setStdKey] = useState("rec709");
+  const [realData, setRealData] = useState<any>(null);
   const std = standards[stdKey];
   const sim = useMemo(() => simForStandard(std), [stdKey]);
   const cieImage = useMemo(() => generateCIEImage(640, 560, [0, 0.8], [0, 0.7]), []);
   const isHDR = !!std.hdr;
+
+  // Load real session data if available.
+  useEffect(() => {
+    api.getSessionChartData().then((d) => {
+      if (d && d.standard) {
+        setRealData(d);
+        if (d.standard && standards[d.standard]) setStdKey(d.standard);
+      }
+    }).catch(() => {});
+  }, []);
+
+  // Merge real data into sim format when available.
+  const data = useMemo(() => {
+    if (!realData) return sim;
+    const merged = { ...sim };
+    if (realData.primaries?.length) {
+      merged.primaries = realData.primaries.map((p: any) => ({
+        label: p.label, tx: p.targetX, ty: p.targetY, mx: p.measuredX, my: p.measuredY,
+      }));
+    }
+    if (realData.grayscale?.length) {
+      merged.grayscale = realData.grayscale.map((g: any) => ({ label: g.label, x: g.x, y: g.y, Y: g.luminance }));
+    }
+    if (realData.gamma?.length) {
+      merged.gamma = realData.gamma.map((g: any) => ({ input: g.input, target: isHDR ? pqEOTF(g.input) : Math.pow(g.input, std.gamma), measured: g.measured }));
+    }
+    if (realData.measurements?.length) {
+      merged.deltaE = realData.measurements
+        .filter((m: any) => m.step === "verify" || m.step === "cms")
+        .map((m: any) => ({ label: m.label || m.pattern, value: m.deltaE }));
+    }
+    if (realData.preCal) {
+      merged.preCal = {
+        ...merged.preCal,
+        blackLevel: realData.preCal.blackLevel,
+        peakLum: { full: realData.preCal.peakLuminance, window10: realData.preCal.peakLuminance },
+        ablDrop: 0,
+      };
+    }
+    return merged;
+  }, [sim, realData, isHDR, std]);
 
   const chromaticityOpt = {
     backgroundColor: "transparent",
@@ -179,21 +222,21 @@ export default function Measurements() {
     graphic: [{ type: "image", left: "center", top: "center", z: -1, style: { image: cieImage, width: 640, height: 560 } }],
     series: [
       { type: "line", name: "Target", data: [[...std.r], [...std.g], [...std.b], [...std.r]], lineStyle: { color: "#fff", width: 2 }, symbol: "none", silent: true },
-      { type: "line", name: "Measured", data: sim.primaries.map((p) => [p.mx, p.my]).concat([[ sim.primaries[0].mx, sim.primaries[0].my ]]),
+      { type: "line", name: "Measured", data: data.primaries.map((p) => [p.mx, p.my]).concat([[ data.primaries[0].mx, data.primaries[0].my ]]),
         lineStyle: { color: "#6366f1", width: 2 }, symbol: "none", silent: true },
       { type: "scatter", name: "Target", symbolSize: 10, symbol: "circle",
-        data: sim.primaries.map((p) => ({ value: [p.tx, p.ty], name: `${p.label} target` })),
+        data: data.primaries.map((p) => ({ value: [p.tx, p.ty], name: `${p.label} target` })),
         itemStyle: { color: "transparent", borderColor: "#fff", borderWidth: 2 } },
       { type: "scatter", name: "Measured", symbolSize: 10,
-        data: sim.primaries.map((p) => ({ value: [p.mx, p.my], name: `${p.label} measured` })),
+        data: data.primaries.map((p) => ({ value: [p.mx, p.my], name: `${p.label} measured` })),
         itemStyle: { color: "#6366f1", borderColor: "#fff", borderWidth: 1 } },
       { type: "scatter", name: "White (target)", symbolSize: 12, symbol: "diamond",
         data: [{ value: [std.w[0], std.w[1]], name: "D65 target" }],
         itemStyle: { color: "transparent", borderColor: "#facc15", borderWidth: 2 } },
       { type: "scatter", name: "White (measured)", symbolSize: 12, symbol: "diamond",
-        data: [{ value: [sim.white.mx, sim.white.my], name: "D65 measured" }],
+        data: [{ value: [data.white.mx, data.white.my], name: "D65 measured" }],
         itemStyle: { color: "#facc15", borderColor: "#fff", borderWidth: 1 } },
-      { type: "scatter", name: "Grayscale", symbolSize: 5, data: sim.grayscale.map((g) => [g.x, g.y]), itemStyle: { color: "#fff" } },
+      { type: "scatter", name: "Grayscale", symbolSize: 5, data: data.grayscale.map((g) => [g.x, g.y]), itemStyle: { color: "#fff" } },
     ],
   };
 
@@ -202,21 +245,21 @@ export default function Measurements() {
     backgroundColor: "transparent",
     tooltip: { trigger: "axis" as const },
     legend: { data: [`Target ${eotfLabel}`, "Measured"], textStyle: { color: "#8b8fa3" }, top: 0 },
-    xAxis: { type: "category" as const, data: sim.gamma.map((g) => `${(g.input * 100).toFixed(0)}%`), ...ax },
+    xAxis: { type: "category" as const, data: data.gamma.map((g) => `${(g.input * 100).toFixed(0)}%`), ...ax },
     yAxis: { min: 0, max: isHDR ? undefined : 1, name: isHDR ? "Normalized luminance" : undefined, ...ax },
     series: [
-      { name: `Target ${eotfLabel}`, type: "line", data: sim.gamma.map((g) => +g.target.toFixed(4)), lineStyle: { color: "#555", type: "dashed" as const }, symbol: "none" },
-      { name: "Measured", type: "line", data: sim.gamma.map((g) => +g.measured.toFixed(4)), lineStyle: { color: "#6366f1" }, symbol: "circle", symbolSize: 4, itemStyle: { color: "#6366f1" } },
+      { name: `Target ${eotfLabel}`, type: "line", data: data.gamma.map((g) => +g.target.toFixed(4)), lineStyle: { color: "#555", type: "dashed" as const }, symbol: "none" },
+      { name: "Measured", type: "line", data: data.gamma.map((g) => +g.measured.toFixed(4)), lineStyle: { color: "#6366f1" }, symbol: "circle", symbolSize: 4, itemStyle: { color: "#6366f1" } },
     ],
   };
 
   const deltaEOpt = {
     backgroundColor: "transparent",
     tooltip: { trigger: "axis" as const },
-    xAxis: { type: "category" as const, data: sim.deltaE.map((d) => d.label), ...ax },
+    xAxis: { type: "category" as const, data: data.deltaE.map((d) => d.label), ...ax },
     yAxis: { min: 0, ...ax },
     series: [
-      { type: "bar", data: sim.deltaE.map((d) => ({ value: d.value, itemStyle: { color: d.value < 1 ? "#22c55e" : d.value < 2 ? "#facc15" : "#ef4444" } })) },
+      { type: "bar", data: data.deltaE.map((d) => ({ value: d.value, itemStyle: { color: d.value < 1 ? "#22c55e" : d.value < 2 ? "#facc15" : "#ef4444" } })) },
       { type: "line", markLine: { silent: true, data: [{ yAxis: 2, lineStyle: { color: "#ef4444", type: "dashed" as const } }] }, data: [] },
     ],
   };
@@ -225,11 +268,11 @@ export default function Measurements() {
     backgroundColor: "transparent",
     tooltip: { trigger: "axis" as const },
     legend: { data: ["Measured Y", "Ideal"], textStyle: { color: "#8b8fa3" }, top: 0 },
-    xAxis: { type: "category" as const, data: sim.grayscale.map((g) => g.label), ...ax },
+    xAxis: { type: "category" as const, data: data.grayscale.map((g) => g.label), ...ax },
     yAxis: { name: "Luminance (cd/m²)", ...ax },
     series: [
-      { name: "Measured Y", type: "line", data: sim.grayscale.map((g) => g.Y.toFixed(1)), lineStyle: { color: "#6366f1" }, symbol: "circle", symbolSize: 6, itemStyle: { color: "#6366f1" } },
-      { name: "Ideal", type: "line", data: sim.grayscale.map((_, i) => {
+      { name: "Measured Y", type: "line", data: data.grayscale.map((g) => g.Y.toFixed(1)), lineStyle: { color: "#6366f1" }, symbol: "circle", symbolSize: 6, itemStyle: { color: "#6366f1" } },
+      { name: "Ideal", type: "line", data: data.grayscale.map((_, i) => {
         const peak = isHDR ? (std.peakNits! / 1000) * 48.2 : 48.2;
         return (( isHDR ? pqEOTF(i / 10) : Math.pow(i / 10, std.gamma)) * peak).toFixed(1);
       }), lineStyle: { color: "#555", type: "dashed" as const }, symbol: "none" },
@@ -247,8 +290,8 @@ export default function Measurements() {
       splitLine: { lineStyle: { color: "#2a2d3a" } }, axisLine: { lineStyle: { color: "#2a2d3a" } } },
     series: [{ type: "radar",
       data: satLevels.flatMap((lvl, li) => {
-        const tgt = sim.saturation.map((s) => s.levels[li].target);
-        const meas = sim.saturation.map((s) => s.levels[li].measured);
+        const tgt = data.saturation.map((s) => s.levels[li].target);
+        const meas = data.saturation.map((s) => s.levels[li].measured);
         const alpha = 0.4 + li * 0.15;
         return [
           { name: `${lvl}% target`, value: tgt, lineStyle: { color: `rgba(255,255,255,${alpha})`, type: "dashed" as const }, symbol: "none" },
@@ -267,7 +310,7 @@ export default function Measurements() {
     yAxis: { show: false, min: 0, max: 4, inverse: true },
     series: [{
       type: "scatter", symbolSize: 48, symbol: "roundRect",
-      data: sim.colorChecker.map((p, i) => ({
+      data: data.colorChecker.map((p, i) => ({
         name: p.name,
         value: [i % 6 + 0.5, Math.floor(i / 6) + 0.5, p.deltaE],
         itemStyle: { color: p.rgb, borderColor: p.deltaE < 1 ? "#22c55e" : p.deltaE < 2 ? "#facc15" : p.deltaE < 3 ? "#ef4444" : "#ff0000", borderWidth: 2 },
@@ -277,12 +320,12 @@ export default function Measurements() {
   };
 
   // Pre-cal checks
-  const pc = sim.preCal;
+  const pc = data.preCal;
   const cr = pc.peakLum.window10 / Math.max(pc.blackLevel, 0.001);
 
-  const avgDe = (sim.deltaE.reduce((s, d) => s + d.value, 0) / sim.deltaE.length).toFixed(1);
-  const maxDe = Math.max(...sim.deltaE.map((d) => d.value)).toFixed(1);
-  const ccAvg = (sim.colorChecker.reduce((s, p) => s + p.deltaE, 0) / sim.colorChecker.length).toFixed(1);
+  const avgDe = (data.deltaE.reduce((s, d) => s + d.value, 0) / data.deltaE.length).toFixed(1);
+  const maxDe = Math.max(...data.deltaE.map((d) => d.value)).toFixed(1);
+  const ccAvg = (data.colorChecker.reduce((s, p) => s + p.deltaE, 0) / data.colorChecker.length).toFixed(1);
 
   const header = (
     <div className="flex items-center gap-4 mb-6">

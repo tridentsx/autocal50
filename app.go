@@ -487,3 +487,124 @@ func (a *App) GetSettings() store.Settings {
 func (a *App) SaveSettings(s store.Settings) error {
 	return store.SaveSettings(s)
 }
+
+// Chart Data — returns session measurements formatted for the Measurements page charts.
+
+func (a *App) GetSessionChartData(sessionID string) (map[string]any, error) {
+	var sess *store.Session
+	if sessionID == "" {
+		a.mu.RLock()
+		sess = a.activeSession
+		a.mu.RUnlock()
+	} else {
+		var err error
+		sess, err = a.store.Load(sessionID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if sess == nil {
+		return nil, fmt.Errorf("no session")
+	}
+
+	data := map[string]any{
+		"sessionId": sess.ID,
+		"standard":  sess.Standard,
+		"created":   sess.Created,
+	}
+
+	// Pre-cal
+	if sess.PreCal != nil {
+		data["preCal"] = sess.PreCal
+	}
+
+	// Delta E per step
+	deltaE := []map[string]any{}
+	for step, measurements := range sess.Steps {
+		for _, m := range measurements {
+			deltaE = append(deltaE, map[string]any{
+				"step":    step,
+				"pattern": m.PatternID,
+				"label":   m.Target.Label,
+				"deltaE":  m.DeltaE,
+				"passed":  m.Passed,
+				"targetX": m.Target.X,
+				"targetY": m.Target.Y,
+				"measuredX": m.Reading.X,
+				"measuredY": m.Reading.Y,
+				"luminance": m.Reading.Luminance,
+				"cct":       m.Reading.CCT,
+			})
+		}
+	}
+	data["measurements"] = deltaE
+
+	// Gamma points from gamma step
+	if gammaMs, ok := sess.Steps["gamma"]; ok && len(gammaMs) > 0 {
+		// Find peak luminance (100% reading)
+		peakLum := 1.0
+		for _, m := range gammaMs {
+			if m.Reading.Luminance > peakLum {
+				peakLum = m.Reading.Luminance
+			}
+		}
+		gamma := []map[string]any{}
+		for i, m := range gammaMs {
+			input := float64(i) / float64(len(gammaMs)-1)
+			gamma = append(gamma, map[string]any{
+				"input":    input,
+				"measured": m.Reading.Luminance / peakLum,
+			})
+		}
+		data["gamma"] = gamma
+	}
+
+	// Primaries from cms step
+	if cmsMs, ok := sess.Steps["cms"]; ok {
+		primaries := []map[string]any{}
+		for _, m := range cmsMs {
+			sum := m.Reading.X + m.Reading.Y + m.Reading.Z
+			mx, my := 0.0, 0.0
+			if sum > 0 {
+				mx = m.Reading.X / sum
+				my = m.Reading.Y / sum
+			}
+			primaries = append(primaries, map[string]any{
+				"label":   m.Target.Label,
+				"targetX": m.Target.X,
+				"targetY": m.Target.Y,
+				"measuredX": mx,
+				"measuredY": my,
+				"deltaE":    m.DeltaE,
+			})
+		}
+		data["primaries"] = primaries
+	}
+
+	// Grayscale from whitebalance step
+	if wbMs, ok := sess.Steps["whitebalance"]; ok {
+		grayscale := []map[string]any{}
+		for _, m := range wbMs {
+			sum := m.Reading.X + m.Reading.Y + m.Reading.Z
+			mx, my := 0.0, 0.0
+			if sum > 0 {
+				mx = m.Reading.X / sum
+				my = m.Reading.Y / sum
+			}
+			grayscale = append(grayscale, map[string]any{
+				"label":     m.Target.Label,
+				"x":         mx,
+				"y":         my,
+				"luminance": m.Reading.Luminance,
+			})
+		}
+		data["grayscale"] = grayscale
+	}
+
+	// Profile path
+	if sess.ProfilePath != "" {
+		data["profilePath"] = sess.ProfilePath
+	}
+
+	return data, nil
+}
